@@ -1,0 +1,68 @@
+package engine
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestLoadRunConfigFile_YAMLAndJSON(t *testing.T) {
+	dir := t.TempDir()
+
+	yml := filepath.Join(dir, "run.yaml")
+	if err := os.WriteFile(yml, []byte(`
+version: 1
+repo:
+  path: /tmp/repo
+cxdb:
+  binary_addr: 127.0.0.1:9009
+  http_base_url: http://127.0.0.1:9010
+llm:
+  providers:
+    openai:
+      backend: api
+modeldb:
+  litellm_catalog_path: /tmp/catalog.json
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadRunConfigFile(yml)
+	if err != nil {
+		t.Fatalf("LoadRunConfigFile(yaml): %v", err)
+	}
+	if cfg.Version != 1 || strings.TrimSpace(cfg.Repo.Path) == "" {
+		t.Fatalf("cfg: %+v", cfg)
+	}
+	if cfg.LLM.Providers["openai"].Backend != BackendAPI {
+		t.Fatalf("openai backend: %q", cfg.LLM.Providers["openai"].Backend)
+	}
+
+	js := filepath.Join(dir, "run.json")
+	if err := os.WriteFile(js, []byte(`{
+  "version": 1,
+  "repo": {"path": "/tmp/repo"},
+  "cxdb": {"binary_addr": "127.0.0.1:9009", "http_base_url": "http://127.0.0.1:9010"},
+  "llm": {"providers": {"anthropic": {"backend": "cli"}}},
+  "modeldb": {"litellm_catalog_path": "/tmp/catalog.json"}
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg2, err := LoadRunConfigFile(js)
+	if err != nil {
+		t.Fatalf("LoadRunConfigFile(json): %v", err)
+	}
+	if cfg2.LLM.Providers["anthropic"].Backend != BackendCLI {
+		t.Fatalf("anthropic backend: %q", cfg2.LLM.Providers["anthropic"].Backend)
+	}
+}
+
+func TestNormalizeProviderKey_GeminiMapsToGoogle(t *testing.T) {
+	if got := normalizeProviderKey("gemini"); got != "google" {
+		t.Fatalf("normalizeProviderKey(gemini)=%q want google", got)
+	}
+	if got := normalizeProviderKey("GOOGLE"); got != "google" {
+		t.Fatalf("normalizeProviderKey(GOOGLE)=%q want google", got)
+	}
+}
+

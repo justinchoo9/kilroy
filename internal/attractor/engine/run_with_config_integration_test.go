@@ -1,0 +1,393 @@
+package engine
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestRunWithConfig_CLIBackend_CapturesInvocationAndPersistsArtifactsToCXDB(t *testing.T) {
+	repo := initTestRepo(t)
+	logsRoot := t.TempDir()
+
+	pinned := writePinnedCatalog(t)
+	cxdbSrv := newCXDBTestServer(t)
+
+	cli := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(cli, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+
+out=""
+schema=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o)
+      out="$2"
+      shift 2
+      ;;
+    --output-schema)
+      schema="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+if [[ -n "$schema" ]]; then
+  [[ -f "$schema" ]] || { echo "missing schema: $schema" >&2; exit 2; }
+fi
+if [[ -n "$out" ]]; then
+  echo '{"final":"ok"}' > "$out"
+fi
+
+echo 'from_cli' > cli_wrote.txt
+
+echo '{"type":"start"}'
+echo '{"type":"done","text":"ok"}'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KILROY_CODEX_PATH", cli)
+
+	cfg := &RunConfigFile{Version: 1}
+	cfg.Repo.Path = repo
+	cfg.CXDB.BinaryAddr = "127.0.0.1:9009"
+	cfg.CXDB.HTTPBaseURL = cxdbSrv.URL()
+	cfg.LLM.Providers = map[string]struct {
+		Backend BackendKind `json:"backend" yaml:"backend"`
+	}{
+		"openai": {Backend: BackendCLI},
+	}
+	cfg.ModelDB.LiteLLMCatalogPath = pinned
+	cfg.ModelDB.LiteLLMCatalogUpdatePolicy = "pinned"
+	cfg.Git.RunBranchPrefix = "attractor/run"
+
+	dot := []byte(`
+digraph G {
+  graph [goal="test"]
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="say hi"]
+  start -> a -> exit
+}
+`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	res, err := RunWithConfig(ctx, dot, cfg, RunOptions{RunID: "test-run-cli", LogsRoot: logsRoot})
+	if err != nil {
+		t.Fatalf("RunWithConfig: %v", err)
+	}
+
+	// CLI artifacts captured.
+	assertExists(t, filepath.Join(res.LogsRoot, "a", "cli_invocation.json"))
+	assertExists(t, filepath.Join(res.LogsRoot, "a", "stdout.log"))
+	assertExists(t, filepath.Join(res.LogsRoot, "a", "events.ndjson"))
+	assertExists(t, filepath.Join(res.LogsRoot, "a", "events.json"))
+	assertExists(t, filepath.Join(res.LogsRoot, "a", "output_schema.json"))
+	assertExists(t, filepath.Join(res.LogsRoot, "a", "output.json"))
+	assertExists(t, filepath.Join(res.LogsRoot, "a", "stage.tgz"))
+	assertExists(t, filepath.Join(res.LogsRoot, "run.tgz"))
+
+	// Invocation includes env capture fields (metaspec replayability).
+	var inv map[string]any
+	b, err := os.ReadFile(filepath.Join(res.LogsRoot, "a", "cli_invocation.json"))
+	if err != nil {
+		t.Fatalf("read cli_invocation.json: %v", err)
+	}
+	if err := json.Unmarshal(b, &inv); err != nil {
+		t.Fatalf("unmarshal cli_invocation.json: %v", err)
+	}
+	if inv["env_mode"] != "inherit" {
+		t.Fatalf("env_mode: %v", inv["env_mode"])
+	}
+	al, ok := inv["env_allowlist"].([]any)
+	if !ok || len(al) != 1 || strings.TrimSpace(anyToString(al[0])) != "*" {
+		t.Fatalf("env_allowlist: %#v", inv["env_allowlist"])
+	}
+	if strings.TrimSpace(anyToString(inv["working_dir"])) == "" {
+		t.Fatalf("working_dir missing in invocation: %#v", inv["working_dir"])
+	}
+	if strings.TrimSpace(anyToString(inv["structured_output_path"])) == "" {
+		t.Fatalf("structured_output_path missing in invocation: %#v", inv["structured_output_path"])
+	}
+	if strings.TrimSpace(anyToString(inv["structured_output_schema_path"])) == "" {
+		t.Fatalf("structured_output_schema_path missing in invocation: %#v", inv["structured_output_schema_path"])
+	}
+
+	// Confirm CLI ran in the worktree by checking the committed file exists.
+	if got := strings.TrimSpace(runCmdOut(t, repo, "git", "show", res.FinalCommitSHA+":cli_wrote.txt")); got != "from_cli" {
+		t.Fatalf("cli_wrote.txt: got %q want %q", got, "from_cli")
+	}
+
+	// CXDB received normalized turns and artifact turns.
+	manifestBytes, err := os.ReadFile(filepath.Join(res.LogsRoot, "manifest.json"))
+	if err != nil {
+		t.Fatalf("read manifest.json: %v", err)
+	}
+	var manifest map[string]any
+	_ = json.Unmarshal(manifestBytes, &manifest)
+	cxdbInfo, _ := manifest["cxdb"].(map[string]any)
+	ctxID := ""
+	if cxdbInfo != nil {
+		ctxID = strings.TrimSpace(anyToString(cxdbInfo["context_id"]))
+	}
+	if ctxID == "" {
+		t.Fatalf("manifest missing cxdb.context_id: %v", manifest["cxdb"])
+	}
+
+	turns := cxdbSrv.Turns(ctxID)
+	if len(turns) == 0 {
+		t.Fatalf("expected cxdb turns, got 0")
+	}
+	hasRunStarted := false
+	hasRunStartedLogsRoot := false
+	hasGitCheckpoint := false
+	hasCheckpointSaved := false
+	hasArtifact := false
+	wantArtifacts := map[string]bool{
+		"manifest.json":       true,
+		"checkpoint.json":     true,
+		"final.json":          true,
+		"prompt.md":           true,
+		"response.md":         true,
+		"status.json":         true,
+		"events.ndjson":       true,
+		"events.json":         true,
+		"cli_invocation.json": true,
+		"stdout.log":          true,
+		"output.json":         true,
+		"output_schema.json":  true,
+		"stage.tgz":           true,
+		"run.tgz":             true,
+	}
+	seenArtifacts := map[string]bool{}
+	for _, tr := range turns {
+		if tr["type_id"] == "com.kilroy.attractor.RunStarted" {
+			hasRunStarted = true
+			if p, ok := tr["payload"].(map[string]any); ok {
+				if strings.TrimSpace(anyToString(p["logs_root"])) == strings.TrimSpace(res.LogsRoot) {
+					hasRunStartedLogsRoot = true
+				}
+			}
+		}
+		if tr["type_id"] == "com.kilroy.attractor.GitCheckpoint" {
+			hasGitCheckpoint = true
+		}
+		if tr["type_id"] == "com.kilroy.attractor.CheckpointSaved" {
+			hasCheckpointSaved = true
+		}
+		if tr["type_id"] == "com.kilroy.attractor.Artifact" {
+			hasArtifact = true
+			if p, ok := tr["payload"].(map[string]any); ok {
+				name := strings.Trim(strings.TrimSpace(anyToString(p["name"])), "\"")
+				if name != "" {
+					seenArtifacts[name] = true
+				}
+			}
+		}
+	}
+	if !hasRunStarted {
+		t.Fatalf("expected RunStarted turn")
+	}
+	if !hasRunStartedLogsRoot {
+		t.Fatalf("expected RunStarted.logs_root to equal logs_root=%q", res.LogsRoot)
+	}
+	if !hasGitCheckpoint {
+		t.Fatalf("expected GitCheckpoint turns")
+	}
+	if !hasCheckpointSaved {
+		t.Fatalf("expected CheckpointSaved turns")
+	}
+	if !hasArtifact {
+		t.Fatalf("expected Artifact turns")
+	}
+	for name := range wantArtifacts {
+		if !seenArtifacts[name] {
+			t.Fatalf("missing expected artifact %q; saw=%v", name, seenArtifacts)
+		}
+	}
+
+	// final.json includes CXDB context + head turn id (metaspec).
+	finalBytes, err := os.ReadFile(filepath.Join(res.LogsRoot, "final.json"))
+	if err != nil {
+		t.Fatalf("read final.json: %v", err)
+	}
+	var final map[string]any
+	_ = json.Unmarshal(finalBytes, &final)
+	if strings.TrimSpace(anyToString(final["cxdb_context_id"])) == "" || strings.TrimSpace(anyToString(final["cxdb_head_turn_id"])) == "" {
+		t.Fatalf("final.json missing cxdb ids: %v", final)
+	}
+}
+
+func TestRunWithConfig_APIBackend_AgentLoop_WritesAgentEventsAndPassesReasoningEffort(t *testing.T) {
+	repo := initTestRepo(t)
+	logsRoot := t.TempDir()
+
+	pinned := writePinnedCatalog(t)
+	cxdbSrv := newCXDBTestServer(t)
+
+	var mu sync.Mutex
+	gotReasoningLow := false
+	openaiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		var gotReq map[string]any
+		_ = json.Unmarshal(b, &gotReq)
+		if reasoningAny, ok := gotReq["reasoning"].(map[string]any); ok {
+			if strings.TrimSpace(anyToString(reasoningAny["effort"])) == "low" {
+				mu.Lock()
+				gotReasoningLow = true
+				mu.Unlock()
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "resp_1",
+  "model": "gpt-5.2",
+  "output": [{"type": "message", "content": [{"type":"output_text", "text":"Hello"}]}],
+  "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+}`))
+	}))
+	t.Cleanup(openaiSrv.Close)
+
+	t.Setenv("OPENAI_API_KEY", "k")
+	t.Setenv("OPENAI_BASE_URL", openaiSrv.URL)
+
+	cfg := &RunConfigFile{Version: 1}
+	cfg.Repo.Path = repo
+	cfg.CXDB.BinaryAddr = "127.0.0.1:9009"
+	cfg.CXDB.HTTPBaseURL = cxdbSrv.URL()
+	cfg.LLM.Providers = map[string]struct {
+		Backend BackendKind `json:"backend" yaml:"backend"`
+	}{
+		"openai": {Backend: BackendAPI},
+	}
+	cfg.ModelDB.LiteLLMCatalogPath = pinned
+	cfg.ModelDB.LiteLLMCatalogUpdatePolicy = "pinned"
+	cfg.Git.RunBranchPrefix = "attractor/run"
+
+	dot := []byte(`
+digraph G {
+  graph [goal="test"]
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, reasoning_effort=low, prompt="say hi"]
+  start -> a -> exit
+}
+`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	res, err := RunWithConfig(ctx, dot, cfg, RunOptions{RunID: "test-run-api-agent-loop", LogsRoot: logsRoot})
+	if err != nil {
+		t.Fatalf("RunWithConfig: %v", err)
+	}
+
+	// Agent-loop artifacts captured (metaspec).
+	assertExists(t, filepath.Join(res.LogsRoot, "a", "events.ndjson"))
+	assertExists(t, filepath.Join(res.LogsRoot, "a", "events.json"))
+
+	mu.Lock()
+	ok := gotReasoningLow
+	mu.Unlock()
+	if !ok {
+		t.Fatalf("expected at least one OpenAI request to include reasoning.effort=low")
+	}
+}
+
+func TestRunWithConfig_APIBackend_OneShot_WritesRequestAndResponseArtifacts(t *testing.T) {
+	repo := initTestRepo(t)
+	logsRoot := t.TempDir()
+
+	pinned := writePinnedCatalog(t)
+	cxdbSrv := newCXDBTestServer(t)
+
+	openaiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "resp_1",
+  "model": "gpt-5.2",
+  "output": [{"type": "message", "content": [{"type":"output_text", "text":"Hello"}]}],
+  "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+}`))
+	}))
+	t.Cleanup(openaiSrv.Close)
+
+	t.Setenv("OPENAI_API_KEY", "k")
+	t.Setenv("OPENAI_BASE_URL", openaiSrv.URL)
+
+	cfg := &RunConfigFile{Version: 1}
+	cfg.Repo.Path = repo
+	cfg.CXDB.BinaryAddr = "127.0.0.1:9009"
+	cfg.CXDB.HTTPBaseURL = cxdbSrv.URL()
+	cfg.LLM.Providers = map[string]struct {
+		Backend BackendKind `json:"backend" yaml:"backend"`
+	}{
+		"openai": {Backend: BackendAPI},
+	}
+	cfg.ModelDB.LiteLLMCatalogPath = pinned
+	cfg.ModelDB.LiteLLMCatalogUpdatePolicy = "pinned"
+	cfg.Git.RunBranchPrefix = "attractor/run"
+
+	dot := []byte(`
+digraph G {
+  graph [goal="test"]
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, codergen_mode=one_shot, prompt="say hi"]
+  start -> a -> exit
+}
+`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	res, err := RunWithConfig(ctx, dot, cfg, RunOptions{RunID: "test-run-api-oneshot", LogsRoot: logsRoot})
+	if err != nil {
+		t.Fatalf("RunWithConfig: %v", err)
+	}
+
+	assertExists(t, filepath.Join(res.LogsRoot, "a", "api_request.json"))
+	assertExists(t, filepath.Join(res.LogsRoot, "a", "api_response.json"))
+}
+
+func initTestRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	runCmd(t, repo, "git", "init")
+	runCmd(t, repo, "git", "config", "user.name", "tester")
+	runCmd(t, repo, "git", "config", "user.email", "tester@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCmd(t, repo, "git", "add", "-A")
+	runCmd(t, repo, "git", "commit", "-m", "init")
+	return repo
+}
+
+func writePinnedCatalog(t *testing.T) string {
+	t.Helper()
+	pinned := filepath.Join(t.TempDir(), "pinned.json")
+	if err := os.WriteFile(pinned, []byte(`{"gpt-5.2":{"litellm_provider":"openai","mode":"chat"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return pinned
+}

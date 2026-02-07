@@ -1,0 +1,505 @@
+package engine
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/oklog/ulid/v2"
+
+	"github.com/strongdm/kilroy/internal/attractor/model"
+	"github.com/strongdm/kilroy/internal/attractor/runtime"
+)
+
+type Execution struct {
+	Graph       *model.Graph
+	Context     *runtime.Context
+	LogsRoot    string
+	WorktreeDir string
+	Engine      *Engine
+}
+
+type Handler interface {
+	Execute(ctx context.Context, exec *Execution, node *model.Node) (runtime.Outcome, error)
+}
+
+type HandlerRegistry struct {
+	handlers       map[string]Handler
+	defaultHandler Handler
+}
+
+func NewDefaultRegistry() *HandlerRegistry {
+	reg := &HandlerRegistry{
+		handlers: map[string]Handler{},
+	}
+	// Built-in handlers.
+	reg.Register("start", &StartHandler{})
+	reg.Register("exit", &ExitHandler{})
+	reg.Register("conditional", &ConditionalHandler{})
+	reg.Register("wait.human", &WaitHumanHandler{})
+	reg.Register("parallel", &ParallelHandler{})
+	reg.Register("parallel.fan_in", &FanInHandler{})
+	reg.Register("tool", &ToolHandler{})
+	reg.Register("stack.manager_loop", &ManagerLoopHandler{})
+	reg.defaultHandler = &CodergenHandler{}
+	reg.Register("codergen", reg.defaultHandler)
+	return reg
+}
+
+func (r *HandlerRegistry) Register(typeString string, h Handler) {
+	if r.handlers == nil {
+		r.handlers = map[string]Handler{}
+	}
+	r.handlers[typeString] = h
+}
+
+func (r *HandlerRegistry) Resolve(n *model.Node) Handler {
+	if n == nil {
+		return r.defaultHandler
+	}
+	if t := strings.TrimSpace(n.TypeOverride()); t != "" {
+		if h, ok := r.handlers[t]; ok {
+			return h
+		}
+	}
+	handlerType := shapeToType(n.Shape())
+	if h, ok := r.handlers[handlerType]; ok {
+		return h
+	}
+	return r.defaultHandler
+}
+
+func shapeToType(shape string) string {
+	switch shape {
+	case "Mdiamond":
+		return "start"
+	case "Msquare":
+		return "exit"
+	case "box":
+		return "codergen"
+	case "hexagon":
+		return "wait.human"
+	case "diamond":
+		return "conditional"
+	case "component":
+		return "parallel"
+	case "tripleoctagon":
+		return "parallel.fan_in"
+	case "parallelogram":
+		return "tool"
+	case "house":
+		return "stack.manager_loop"
+	default:
+		return "codergen"
+	}
+}
+
+type StartHandler struct{}
+
+func (h *StartHandler) Execute(ctx context.Context, exec *Execution, node *model.Node) (runtime.Outcome, error) {
+	return runtime.Outcome{Status: runtime.StatusSuccess, Notes: "start"}, nil
+}
+
+type ExitHandler struct{}
+
+func (h *ExitHandler) Execute(ctx context.Context, exec *Execution, node *model.Node) (runtime.Outcome, error) {
+	return runtime.Outcome{Status: runtime.StatusSuccess, Notes: "exit"}, nil
+}
+
+type ConditionalHandler struct{}
+
+func (h *ConditionalHandler) Execute(ctx context.Context, exec *Execution, node *model.Node) (runtime.Outcome, error) {
+	_ = ctx
+	_ = node
+
+	// Spec: conditional nodes are pass-through routing points. They should not overwrite
+	// the prior stage's outcome/preferred_label, since edge conditions frequently depend
+	// on those values.
+	prevStatus := runtime.StatusSuccess
+	prevPreferred := ""
+	if exec != nil && exec.Context != nil {
+		if st, err := runtime.ParseStageStatus(exec.Context.GetString("outcome", "")); err == nil && st != "" {
+			prevStatus = st
+		}
+		prevPreferred = exec.Context.GetString("preferred_label", "")
+	}
+
+	return runtime.Outcome{
+		Status:         prevStatus,
+		PreferredLabel: prevPreferred,
+		Notes:          "conditional pass-through",
+	}, nil
+}
+
+type CodergenBackend interface {
+	Run(ctx context.Context, exec *Execution, node *model.Node, prompt string) (string, *runtime.Outcome, error)
+}
+
+type SimulatedCodergenBackend struct{}
+
+func (b *SimulatedCodergenBackend) Run(ctx context.Context, exec *Execution, node *model.Node, prompt string) (string, *runtime.Outcome, error) {
+	_ = ctx
+	_ = exec
+	_ = node
+	return "[Simulated] " + prompt, nil, nil
+}
+
+type CodergenHandler struct{}
+
+func (h *CodergenHandler) Execute(ctx context.Context, exec *Execution, node *model.Node) (runtime.Outcome, error) {
+	stageDir := filepath.Join(exec.LogsRoot, node.ID)
+	basePrompt := strings.TrimSpace(node.Prompt())
+	if basePrompt == "" {
+		basePrompt = node.Label()
+	}
+
+	// Fidelity preamble (attractor-spec context fidelity): when fidelity is not `full`, synthesize
+	// a context carryover preamble at execution time.
+	fidelity := "compact"
+	if exec != nil && exec.Engine != nil && strings.TrimSpace(exec.Engine.lastResolvedFidelity) != "" {
+		fidelity = strings.TrimSpace(exec.Engine.lastResolvedFidelity)
+	}
+	promptText := basePrompt
+	if fidelity != "full" {
+		runID := ""
+		if exec != nil && exec.Engine != nil {
+			runID = exec.Engine.Options.RunID
+		}
+		goal := ""
+		if exec != nil && exec.Context != nil {
+			goal = exec.Context.GetString("graph.goal", "")
+		}
+		if strings.TrimSpace(goal) == "" && exec != nil && exec.Graph != nil {
+			goal = exec.Graph.Attrs["goal"]
+		}
+		prevNode := ""
+		if exec != nil && exec.Context != nil {
+			prevNode = exec.Context.GetString("previous_node", "")
+		}
+		preamble := buildFidelityPreamble(exec.Context, runID, goal, fidelity, prevNode, decodeCompletedNodes(exec.Context))
+		promptText = strings.TrimSpace(preamble) + "\n\n" + basePrompt
+	}
+
+	if err := os.WriteFile(filepath.Join(stageDir, "prompt.md"), []byte(promptText), 0o644); err != nil {
+		return runtime.Outcome{Status: runtime.StatusFail, FailureReason: err.Error()}, err
+	}
+
+	backend := exec.Engine.CodergenBackend
+	if backend == nil {
+		backend = &SimulatedCodergenBackend{}
+	}
+	resp, out, err := backend.Run(ctx, exec, node, promptText)
+	if err != nil {
+		return runtime.Outcome{Status: runtime.StatusRetry, FailureReason: err.Error()}, err
+	}
+	if strings.TrimSpace(resp) != "" {
+		_ = os.WriteFile(filepath.Join(stageDir, "response.md"), []byte(resp), 0o644)
+	}
+	if out != nil {
+		return *out, nil
+	}
+	return runtime.Outcome{
+		Status: runtime.StatusSuccess,
+		Notes:  "codergen completed",
+		ContextUpdates: map[string]any{
+			"last_stage":    node.ID,
+			"last_response": truncate(resp, 200),
+		},
+	}, nil
+}
+
+type WaitHumanHandler struct{}
+
+func (h *WaitHumanHandler) Execute(ctx context.Context, exec *Execution, node *model.Node) (runtime.Outcome, error) {
+	edges := exec.Graph.Outgoing(node.ID)
+	if len(edges) == 0 {
+		return runtime.Outcome{Status: runtime.StatusFail, FailureReason: "no outgoing edges for human gate"}, nil
+	}
+
+	options := make([]Option, 0, len(edges))
+	used := map[string]bool{}
+	for i, e := range edges {
+		if e == nil {
+			continue
+		}
+		label := strings.TrimSpace(e.Label())
+		if label == "" {
+			label = e.To
+		}
+		key := acceleratorKey(label)
+		if key == "" || used[key] {
+			// Provide a stable fallback key when accelerator extraction is ambiguous.
+			key = fmt.Sprintf("%d", i+1)
+		}
+		used[key] = true
+		options = append(options, Option{
+			Key:   key,
+			Label: label,
+			To:    e.To,
+		})
+	}
+
+	q := Question{
+		Type:    QuestionSingleSelect,
+		Text:    node.Attr("question", node.Label()),
+		Options: options,
+		Stage:   node.ID,
+	}
+	interviewer := exec.Engine.Interviewer
+	if interviewer == nil {
+		interviewer = &AutoApproveInterviewer{}
+	}
+	ans := interviewer.Ask(q)
+	if ans.TimedOut {
+		return runtime.Outcome{Status: runtime.StatusRetry, FailureReason: "human gate timeout"}, nil
+	}
+	if ans.Skipped {
+		return runtime.Outcome{Status: runtime.StatusFail, FailureReason: "human gate skipped interaction"}, nil
+	}
+
+	selected := options[0]
+	if want := strings.TrimSpace(ans.Value); want != "" {
+		for _, o := range options {
+			if strings.EqualFold(o.Key, want) || strings.EqualFold(o.To, want) {
+				selected = o
+				break
+			}
+		}
+	}
+
+	return runtime.Outcome{
+		Status:           runtime.StatusSuccess,
+		SuggestedNextIDs: []string{selected.To},
+		PreferredLabel:   selected.Label,
+		ContextUpdates: map[string]any{
+			"human.gate.selected": selected.To,
+			"human.gate.label":    selected.Label,
+		},
+		Notes: "human gate selected",
+	}, nil
+}
+
+type ToolHandler struct{}
+
+func (h *ToolHandler) Execute(ctx context.Context, execCtx *Execution, node *model.Node) (runtime.Outcome, error) {
+	stageDir := filepath.Join(execCtx.LogsRoot, node.ID)
+	cmdStr := strings.TrimSpace(node.Attr("tool_command", ""))
+	if cmdStr == "" {
+		return runtime.Outcome{Status: runtime.StatusFail, FailureReason: "no tool_command specified"}, nil
+	}
+	timeout := parseDuration(node.Attr("timeout", ""), 0)
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+
+	callID := ulid.Make().String()
+	if execCtx != nil && execCtx.Engine != nil && execCtx.Engine.CXDB != nil {
+		argsJSON, _ := json.Marshal(map[string]any{
+			"command": cmdStr,
+			"timeout": timeout.String(),
+		})
+		_, _, _ = execCtx.Engine.CXDB.Append(ctx, "com.kilroy.attractor.ToolCall", 1, map[string]any{
+			"run_id":         execCtx.Engine.Options.RunID,
+			"node_id":        node.ID,
+			"tool_name":      "shell",
+			"call_id":        callID,
+			"arguments_json": string(argsJSON),
+		})
+	}
+
+	_ = writeJSON(filepath.Join(stageDir, "tool_invocation.json"), map[string]any{
+		"tool":        "bash",
+		// Use a non-login, non-interactive shell to avoid sourcing user dotfiles.
+		"argv":        []string{"bash", "-c", cmdStr},
+		"command":     cmdStr,
+		"working_dir": execCtx.WorktreeDir,
+		"timeout_ms":  timeout.Milliseconds(),
+		"env_mode":    "inherit",
+	})
+
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, "bash", "-c", cmdStr)
+	cmd.Dir = execCtx.WorktreeDir
+	// Avoid hanging on interactive reads; tool_command doesn't provide a way to supply stdin.
+	cmd.Stdin = strings.NewReader("")
+	stdoutPath := filepath.Join(stageDir, "stdout.log")
+	stderrPath := filepath.Join(stageDir, "stderr.log")
+	stdoutFile, _ := os.Create(stdoutPath)
+	stderrFile, _ := os.Create(stderrPath)
+	defer func() { _ = stdoutFile.Close(); _ = stderrFile.Close() }()
+	cmd.Stdout = stdoutFile
+	cmd.Stderr = stderrFile
+
+	start := time.Now()
+	err := cmd.Run()
+	dur := time.Since(start)
+	exitCode := -1
+	if cmd.ProcessState != nil {
+		exitCode = cmd.ProcessState.ExitCode()
+	}
+	if cctx.Err() == context.DeadlineExceeded {
+		_ = writeJSON(filepath.Join(stageDir, "tool_timing.json"), map[string]any{
+			"duration_ms": dur.Milliseconds(),
+			"exit_code":   exitCode,
+			"timed_out":   true,
+		})
+		_ = writeDiffPatch(stageDir, execCtx.WorktreeDir)
+		return runtime.Outcome{Status: runtime.StatusFail, FailureReason: fmt.Sprintf("tool_command timed out after %s", timeout)}, nil
+	}
+
+	_ = writeJSON(filepath.Join(stageDir, "tool_timing.json"), map[string]any{
+		"duration_ms": dur.Milliseconds(),
+		"exit_code":   exitCode,
+		"timed_out":   false,
+	})
+
+	// Capture diff for debug-by-default. This is stable because we checkpoint after each node.
+	_ = writeDiffPatch(stageDir, execCtx.WorktreeDir)
+
+	stdoutBytes, _ := os.ReadFile(stdoutPath)
+	stderrBytes, _ := os.ReadFile(stderrPath)
+	combined := append(append([]byte{}, stdoutBytes...), stderrBytes...)
+	combinedStr := string(combined)
+	if err != nil {
+		if execCtx != nil && execCtx.Engine != nil && execCtx.Engine.CXDB != nil {
+			_, _, _ = execCtx.Engine.CXDB.Append(ctx, "com.kilroy.attractor.ToolResult", 1, map[string]any{
+				"run_id":    execCtx.Engine.Options.RunID,
+				"node_id":   node.ID,
+				"tool_name": "shell",
+				"call_id":   callID,
+				"output":    truncate(combinedStr, 8_000),
+				"is_error":  true,
+			})
+		}
+		return runtime.Outcome{
+			Status:        runtime.StatusFail,
+			FailureReason: err.Error(),
+			ContextUpdates: map[string]any{
+				"tool.output": truncate(combinedStr, 8_000),
+			},
+		}, nil
+	}
+	if execCtx != nil && execCtx.Engine != nil && execCtx.Engine.CXDB != nil {
+		_, _, _ = execCtx.Engine.CXDB.Append(ctx, "com.kilroy.attractor.ToolResult", 1, map[string]any{
+			"run_id":    execCtx.Engine.Options.RunID,
+			"node_id":   node.ID,
+			"tool_name": "shell",
+			"call_id":   callID,
+			"output":    truncate(combinedStr, 8_000),
+			"is_error":  false,
+		})
+	}
+	return runtime.Outcome{
+		Status: runtime.StatusSuccess,
+		ContextUpdates: map[string]any{
+			"tool.output": truncate(combinedStr, 8_000),
+		},
+		Notes: "tool completed",
+	}, nil
+}
+
+func truncate(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+func writeDiffPatch(stageDir string, worktreeDir string) error {
+	// Best-effort debug artifact: never block the run on diff generation.
+	cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, "git", "diff", "--patch")
+	cmd.Dir = worktreeDir
+	cmd.Stdin = strings.NewReader("")
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	_ = cmd.Run()
+	if cctx.Err() == context.DeadlineExceeded {
+		return nil
+	}
+	if buf.Len() == 0 {
+		return nil
+	}
+	return os.WriteFile(filepath.Join(stageDir, "diff.patch"), buf.Bytes(), 0o644)
+}
+
+func parseDuration(s string, def time.Duration) time.Duration {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return def
+	}
+	// DOT durations are like "900s", "15m", "250ms", "2h", "1d".
+	// Support 'd' as 24h.
+	if strings.HasSuffix(s, "d") {
+		base, ok := parseIntPrefix(strings.TrimSuffix(s, "d"))
+		if ok {
+			return time.Duration(base) * 24 * time.Hour
+		}
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return def
+	}
+	return d
+}
+
+func parseIntPrefix(s string) (int, bool) {
+	var n int
+	_, err := fmt.Sscanf(s, "%d", &n)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+type Interviewer interface {
+	Ask(question Question) Answer
+}
+
+type QuestionType string
+
+const (
+	QuestionSingleSelect QuestionType = "SINGLE_SELECT"
+	QuestionMultiSelect  QuestionType = "MULTI_SELECT"
+	QuestionFreeText     QuestionType = "FREE_TEXT"
+	QuestionConfirm      QuestionType = "CONFIRM"
+)
+
+type Question struct {
+	Type    QuestionType
+	Text    string
+	Options []Option
+	Stage   string
+}
+
+type Option struct {
+	Key   string
+	Label string
+	To    string
+}
+
+type Answer struct {
+	Value    string
+	Values   []string
+	Text     string
+	TimedOut bool
+	Skipped  bool
+}
+
+type AutoApproveInterviewer struct{}
+
+func (i *AutoApproveInterviewer) Ask(q Question) Answer {
+	if len(q.Options) > 0 {
+		return Answer{Value: q.Options[0].Key}
+	}
+	return Answer{Value: "YES"}
+}

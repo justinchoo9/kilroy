@@ -1,0 +1,61 @@
+package engine
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestResume_WithRunConfig_RequiresPerRunModelCatalogSnapshot(t *testing.T) {
+	repo := t.TempDir()
+	runCmd(t, repo, "git", "init")
+	runCmd(t, repo, "git", "config", "user.name", "tester")
+	runCmd(t, repo, "git", "config", "user.email", "tester@example.com")
+	_ = os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644)
+	runCmd(t, repo, "git", "add", "-A")
+	runCmd(t, repo, "git", "commit", "-m", "init")
+
+	logsRoot := t.TempDir()
+	pinned := filepath.Join(t.TempDir(), "pinned.json")
+	_ = os.WriteFile(pinned, []byte(`{"gpt-5.2":{"litellm_provider":"openai","mode":"chat"}}`), 0o644)
+	cxdbSrv := newCXDBTestServer(t)
+
+	cli := filepath.Join(t.TempDir(), "codex")
+	_ = os.WriteFile(cli, []byte("#!/usr/bin/env bash\nset -euo pipefail\n\necho '{\"type\":\"done\",\"text\":\"ok\"}'\n"), 0o755)
+	t.Setenv("KILROY_CODEX_PATH", cli)
+
+	cfg := &RunConfigFile{Version: 1}
+	cfg.Repo.Path = repo
+	cfg.CXDB.BinaryAddr = "127.0.0.1:9009"
+	cfg.CXDB.HTTPBaseURL = cxdbSrv.URL()
+	cfg.LLM.Providers = map[string]struct {
+		Backend BackendKind `json:"backend" yaml:"backend"`
+	}{"openai": {Backend: BackendCLI}}
+	cfg.ModelDB.LiteLLMCatalogPath = pinned
+	cfg.ModelDB.LiteLLMCatalogUpdatePolicy = "pinned"
+	cfg.Git.RunBranchPrefix = "attractor/run"
+
+	dot := []byte(`
+digraph G {
+  graph [goal="test"]
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="say hi"]
+  start -> a -> exit
+}
+`)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	_, err := RunWithConfig(ctx, dot, cfg, RunOptions{RunID: "resume-modeldb", LogsRoot: logsRoot})
+	if err != nil {
+		t.Fatalf("RunWithConfig: %v", err)
+	}
+
+	// Delete the per-run snapshot and verify resume refuses.
+	_ = os.Remove(filepath.Join(logsRoot, "modeldb", "litellm_catalog.json"))
+	if _, err := Resume(ctx, logsRoot); err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+}

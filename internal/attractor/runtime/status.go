@@ -1,0 +1,125 @@
+package runtime
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
+type StageStatus string
+
+const (
+	StatusSuccess        StageStatus = "success"
+	StatusPartialSuccess StageStatus = "partial_success"
+	StatusRetry          StageStatus = "retry"
+	StatusFail           StageStatus = "fail"
+	StatusSkipped        StageStatus = "skipped"
+)
+
+func ParseStageStatus(s string) (StageStatus, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "success", "ok":
+		return StatusSuccess, nil
+	case "partial_success", "partialsuccess", "partial-success":
+		return StatusPartialSuccess, nil
+	case "retry":
+		return StatusRetry, nil
+	case "fail", "failure", "error":
+		return StatusFail, nil
+	case "skipped", "skip":
+		return StatusSkipped, nil
+
+	// Upstream pseudo-enums appear in docs; accept them on read.
+	case "SUCCESS":
+		return StatusSuccess, nil
+	case "PARTIAL_SUCCESS":
+		return StatusPartialSuccess, nil
+	case "RETRY":
+		return StatusRetry, nil
+	case "FAIL":
+		return StatusFail, nil
+	case "SKIPPED":
+		return StatusSkipped, nil
+	default:
+		return "", fmt.Errorf("invalid stage status: %q", s)
+	}
+}
+
+func (s StageStatus) Valid() bool {
+	_, err := ParseStageStatus(string(s))
+	return err == nil
+}
+
+type Outcome struct {
+	Status           StageStatus    `json:"status"`
+	PreferredLabel   string         `json:"preferred_label,omitempty"`
+	SuggestedNextIDs []string       `json:"suggested_next_ids,omitempty"`
+	ContextUpdates   map[string]any `json:"context_updates,omitempty"`
+	Notes            string         `json:"notes,omitempty"`
+	FailureReason    string         `json:"failure_reason,omitempty"`
+	// Optional: handler-specific metadata (not used for routing).
+	Meta map[string]any `json:"meta,omitempty"`
+}
+
+func (o Outcome) Canonicalize() (Outcome, error) {
+	st, err := ParseStageStatus(string(o.Status))
+	if err != nil {
+		return Outcome{}, err
+	}
+	o.Status = st
+	if o.ContextUpdates == nil {
+		o.ContextUpdates = map[string]any{}
+	}
+	if o.SuggestedNextIDs == nil {
+		o.SuggestedNextIDs = []string{}
+	}
+	if o.Meta == nil {
+		o.Meta = map[string]any{}
+	}
+	return o, nil
+}
+
+func (o Outcome) Validate() error {
+	co, err := o.Canonicalize()
+	if err != nil {
+		return err
+	}
+	if (co.Status == StatusFail || co.Status == StatusRetry) && strings.TrimSpace(co.FailureReason) == "" {
+		return fmt.Errorf("failure_reason must be non-empty when status=%q", co.Status)
+	}
+	return nil
+}
+
+func DecodeOutcomeJSON(b []byte) (Outcome, error) {
+	// Metaspec's status.json is canonical. Accept a few common legacy shapes too.
+	//
+	// Canonical:
+	// {"status":"success","preferred_label":"","suggested_next_ids":[],"context_updates":{},"notes":"","failure_reason":""}
+	var o Outcome
+	if err := json.Unmarshal(b, &o); err == nil && o.Status != "" {
+		return o.Canonicalize()
+	}
+
+	// Legacy-ish (attractor-spec Appendix C):
+	// {"outcome":"success","preferred_next_label":"...","suggested_next_ids":[...],"context_updates":{...},"notes":"..."}
+	var legacy struct {
+		Outcome            string         `json:"outcome"`
+		PreferredNextLabel string         `json:"preferred_next_label"`
+		SuggestedNextIDs   []string       `json:"suggested_next_ids"`
+		ContextUpdates     map[string]any `json:"context_updates"`
+		Notes              string         `json:"notes"`
+		FailureReason      string         `json:"failure_reason"`
+	}
+	if err := json.Unmarshal(b, &legacy); err != nil {
+		return Outcome{}, err
+	}
+	o = Outcome{
+		Status:           StageStatus(legacy.Outcome),
+		PreferredLabel:   legacy.PreferredNextLabel,
+		SuggestedNextIDs: legacy.SuggestedNextIDs,
+		ContextUpdates:   legacy.ContextUpdates,
+		Notes:            legacy.Notes,
+		FailureReason:    legacy.FailureReason,
+	}
+	return o.Canonicalize()
+}
