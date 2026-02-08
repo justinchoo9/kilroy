@@ -745,8 +745,19 @@ func (e *Engine) executeWithRetry(ctx context.Context, node *model.Node, retries
 			retries[node.ID] = 0
 			return out, nil
 		}
-		// FAIL and RETRY both participate in retry policy (spec DoD expects this).
+
+		failureClass := classifyFailureClass(out)
+		hintProvided := strings.TrimSpace(readFailureClassHint(out)) != ""
+		canRetry := false
 		if attempt < maxAttempts {
+			if hintProvided {
+				canRetry = shouldRetryOutcome(out, failureClass)
+			} else {
+				// Preserve existing retry behavior for unclassified stage outcomes.
+				canRetry = out.Status == runtime.StatusFail || out.Status == runtime.StatusRetry
+			}
+		}
+		if canRetry {
 			retries[node.ID]++
 			delay := backoffDelayForNode(e.Options.RunID, e.Graph, node, attempt)
 			e.appendProgress(map[string]any{
@@ -759,6 +770,18 @@ func (e *Engine) executeWithRetry(ctx context.Context, node *model.Node, retries
 			})
 			time.Sleep(delay)
 			continue
+		}
+		if hintProvided && attempt < maxAttempts && (out.Status == runtime.StatusFail || out.Status == runtime.StatusRetry) {
+			e.appendProgress(map[string]any{
+				"event":          "stage_retry_blocked",
+				"node_id":        node.ID,
+				"attempt":        attempt,
+				"max":            maxAttempts,
+				"status":         string(out.Status),
+				"failure_reason": out.FailureReason,
+				"failure_class":  failureClass,
+				"max_retry":      maxRetries,
+			})
 		}
 		if allowPartial {
 			po, _ := (runtime.Outcome{
