@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"syscall"
 	"sync"
 	"time"
 
@@ -593,6 +596,17 @@ func (r *CodergenRouter) runCLI(ctx context.Context, execCtx *Execution, node *m
 	if err := os.MkdirAll(stageDir, 0o755); err != nil {
 		return "", &runtime.Outcome{Status: runtime.StatusFail, FailureReason: err.Error()}, nil
 	}
+	providerKey := normalizeProviderKey(provider)
+
+	var isolatedEnv []string
+	var isolatedMeta map[string]any
+	if providerKey == "openai" {
+		var err error
+		isolatedEnv, isolatedMeta, err = buildCodexIsolatedEnv(stageDir)
+		if err != nil {
+			return "", &runtime.Outcome{Status: runtime.StatusFail, FailureReason: err.Error()}, nil
+		}
+	}
 
 	exe, args := defaultCLIInvocation(provider, modelID, execCtx.WorktreeDir)
 	if exe == "" {
@@ -606,7 +620,7 @@ func (r *CodergenRouter) runCLI(ctx context.Context, execCtx *Execution, node *m
 	// fail fast (which is preferred to silently dropping observability artifacts).
 	var structuredOutPath string
 	var structuredSchemaPath string
-	if normalizeProviderKey(provider) == "openai" {
+	if providerKey == "openai" {
 		structuredSchemaPath = filepath.Join(stageDir, "output_schema.json")
 		structuredOutPath = filepath.Join(stageDir, "output.json")
 		if err := os.WriteFile(structuredSchemaPath, []byte(defaultCodexOutputSchema), 0o644); err != nil {
@@ -638,9 +652,17 @@ func (r *CodergenRouter) runCLI(ctx context.Context, execCtx *Execution, node *m
 		"working_dir":  execCtx.WorktreeDir,
 		"prompt_mode":  promptMode,
 		"prompt_bytes": len(prompt),
-		// Metaspec: capture how env was populated so the invocation is replayable.
-		"env_mode":      "inherit",
-		"env_allowlist": []string{"*"},
+	}
+	// Metaspec: capture how env was populated so the invocation is replayable.
+	if providerKey == "openai" {
+		inv["env_mode"] = "isolated"
+		inv["env_scope"] = "codex"
+		for k, v := range isolatedMeta {
+			inv[k] = v
+		}
+	} else {
+		inv["env_mode"] = "inherit"
+		inv["env_allowlist"] = []string{"*"}
 	}
 	if structuredOutPath != "" {
 		inv["structured_output_path"] = structuredOutPath
@@ -658,6 +680,10 @@ func (r *CodergenRouter) runCLI(ctx context.Context, execCtx *Execution, node *m
 	runOnce := func(args []string) (runErr error, exitCode int, dur time.Duration, err error) {
 		cmd := exec.CommandContext(ctx, exe, args...)
 		cmd.Dir = execCtx.WorktreeDir
+		if providerKey == "openai" {
+			cmd.Env = isolatedEnv
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		}
 		if promptMode == "stdin" {
 			cmd.Stdin = strings.NewReader(prompt)
 		} else {
@@ -691,7 +717,7 @@ func (r *CodergenRouter) runCLI(ctx context.Context, execCtx *Execution, node *m
 		return "", &runtime.Outcome{Status: runtime.StatusFail, FailureReason: runErrDetail.Error()}, nil
 	}
 
-	if runErr != nil && normalizeProviderKey(provider) == "openai" && hasArg(actualArgs, "--output-schema") {
+	if runErr != nil && providerKey == "openai" && hasArg(actualArgs, "--output-schema") {
 		stderrBytes, readErr := os.ReadFile(stderrPath)
 		if readErr == nil && isSchemaValidationFailure(string(stderrBytes)) {
 			warnEngine(execCtx, "codex schema validation failed; retrying once without --output-schema")
@@ -758,6 +784,104 @@ func insertPromptArg(args []string, prompt string) []string {
 		}
 	}
 	out = append(out, prompt)
+	return out
+}
+
+func buildCodexIsolatedEnv(stageDir string) ([]string, map[string]any, error) {
+	codexHome := filepath.Join(stageDir, "codex-home")
+	codexStateRoot := filepath.Join(codexHome, ".codex")
+	xdgConfigHome := filepath.Join(codexHome, ".config")
+	xdgDataHome := filepath.Join(codexHome, ".local", "share")
+	xdgStateHome := filepath.Join(codexHome, ".local", "state")
+
+	for _, dir := range []string{codexHome, codexStateRoot, xdgConfigHome, xdgDataHome, xdgStateHome} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	seeded := []string{}
+	seedErrors := []string{}
+	srcHome := strings.TrimSpace(os.Getenv("HOME"))
+	if srcHome != "" {
+		for _, name := range []string{"auth.json", "config.toml"} {
+			src := filepath.Join(srcHome, ".codex", name)
+			dst := filepath.Join(codexStateRoot, name)
+			copied, err := copyIfExists(src, dst)
+			if err != nil {
+				seedErrors = append(seedErrors, fmt.Sprintf("%s: %v", name, err))
+				continue
+			}
+			if copied {
+				seeded = append(seeded, dst)
+			}
+		}
+	}
+
+	env := mergeEnvWithOverrides(os.Environ(), map[string]string{
+		"HOME":            codexHome,
+		"CODEX_HOME":      codexStateRoot,
+		"XDG_CONFIG_HOME": xdgConfigHome,
+		"XDG_DATA_HOME":   xdgDataHome,
+		"XDG_STATE_HOME":  xdgStateHome,
+	})
+
+	meta := map[string]any{
+		"state_root":       codexStateRoot,
+		"env_seeded_files": seeded,
+	}
+	if len(seedErrors) > 0 {
+		meta["env_seed_errors"] = seedErrors
+	}
+	return env, meta, nil
+}
+
+func copyIfExists(src string, dst string) (bool, error) {
+	info, err := os.Stat(src)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if info.IsDir() {
+		return false, fmt.Errorf("source is directory: %s", src)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return false, err
+	}
+	if err := copyFileContents(src, dst); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func mergeEnvWithOverrides(base []string, overrides map[string]string) []string {
+	out := make([]string, 0, len(base)+len(overrides))
+	used := map[string]bool{}
+	for _, entry := range base {
+		key := entry
+		if idx := strings.IndexByte(entry, '='); idx >= 0 {
+			key = entry[:idx]
+		}
+		if v, ok := overrides[key]; ok {
+			out = append(out, key+"="+v)
+			used[key] = true
+			continue
+		}
+		out = append(out, entry)
+	}
+	remaining := make([]string, 0, len(overrides))
+	for k := range overrides {
+		if used[k] {
+			continue
+		}
+		remaining = append(remaining, k)
+	}
+	sort.Strings(remaining)
+	for _, k := range remaining {
+		out = append(out, k+"="+overrides[k])
+	}
 	return out
 }
 
@@ -875,11 +999,20 @@ func removeArgWithValue(args []string, key string) []string {
 }
 
 func copyFileContents(src string, dst string) error {
-	b, err := os.ReadFile(src)
+	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, b, 0o644)
+	defer func() { _ = in.Close() }()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // bestEffortNDJSON always writes events.ndjson (a copy of stdout.log) and, if the
