@@ -99,6 +99,10 @@ type Engine struct {
 	warningsMu sync.Mutex
 	Warnings   []string
 
+	// loop_restart state (attractor-spec §3.2 Step 7).
+	restartCount int
+	baseLogsRoot string // original LogsRoot before any restarts
+
 	progressMu sync.Mutex
 
 	// Fidelity/session resolution state.
@@ -286,6 +290,9 @@ func (e *Engine) run(ctx context.Context) (*Result, error) {
 		e.Context.Set("graph."+k, v)
 	}
 	e.Context.Set("graph.goal", e.Graph.Attrs["goal"])
+
+	// Capture the original logs root for loop_restart (attractor-spec §3.2 Step 7).
+	e.baseLogsRoot = e.LogsRoot
 
 	current := findStartNodeID(e.Graph)
 	if current == "" {
@@ -526,13 +533,54 @@ func (e *Engine) runLoop(ctx context.Context, current string, completed []string
 			"condition": next.Condition(),
 		})
 
-		// loop_restart is not supported in v1 beyond basic detection (metaspec prohibits auto restart semantics).
+		// loop_restart (attractor-spec §3.2 Step 7): terminate current run, re-launch
+		// with a fresh log directory starting at the edge's target node.
 		if strings.EqualFold(next.Attr("loop_restart", "false"), "true") {
-			return nil, fmt.Errorf("loop_restart not supported in v1")
+			return e.loopRestart(ctx, next.To)
 		}
 		e.incomingEdge = next
 		current = next.To
 	}
+}
+
+// loopRestart implements attractor-spec §3.2 Step 7: terminate the current run iteration
+// and re-launch with a fresh log directory, starting at the given target node.
+// The worktree is preserved (code changes carry over); only per-node log directories are fresh.
+func (e *Engine) loopRestart(ctx context.Context, targetNodeID string) (*Result, error) {
+	e.restartCount++
+	maxRestarts := parseInt(e.Graph.Attrs["max_restarts"], 50)
+	if e.restartCount > maxRestarts {
+		return nil, fmt.Errorf("loop_restart limit exceeded (%d restarts, max %d)", e.restartCount, maxRestarts)
+	}
+
+	// Create a fresh log sub-directory for this iteration.
+	newLogsRoot := filepath.Join(e.baseLogsRoot, fmt.Sprintf("restart-%d", e.restartCount))
+	if err := os.MkdirAll(newLogsRoot, 0o755); err != nil {
+		return nil, fmt.Errorf("loop_restart: create logs dir: %w", err)
+	}
+
+	e.appendProgress(map[string]any{
+		"event":         "loop_restart",
+		"restart_count": e.restartCount,
+		"target_node":   targetNodeID,
+		"new_logs_root": newLogsRoot,
+	})
+
+	// Persist graph.dot in the new logs dir for replay/resume.
+	if len(e.DotSource) > 0 {
+		_ = os.WriteFile(filepath.Join(newLogsRoot, "graph.dot"), e.DotSource, 0o644)
+	}
+
+	// Switch to fresh logs; worktree stays the same.
+	e.LogsRoot = newLogsRoot
+
+	// Reset fidelity state.
+	e.incomingEdge = nil
+	e.forceNextFidelity = ""
+	e.forceNextFidelityUsed = false
+
+	// Fresh loop state.
+	return e.runLoop(ctx, targetNodeID, nil, map[string]int{}, map[string]runtime.Outcome{})
 }
 
 func (e *Engine) executeNode(ctx context.Context, node *model.Node) (runtime.Outcome, error) {
@@ -850,6 +898,9 @@ func expandGoal(g *model.Graph) {
 		}
 		if p := n.Attrs["prompt"]; strings.Contains(p, "$goal") {
 			n.Attrs["prompt"] = strings.ReplaceAll(p, "$goal", goal)
+		}
+		if p := n.Attrs["llm_prompt"]; strings.Contains(p, "$goal") {
+			n.Attrs["llm_prompt"] = strings.ReplaceAll(p, "$goal", goal)
 		}
 	}
 }

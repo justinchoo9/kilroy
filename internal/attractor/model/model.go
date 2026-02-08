@@ -128,7 +128,10 @@ func (n *Node) Label() string {
 }
 
 func (n *Node) Prompt() string {
-	return n.Attr("prompt", "")
+	if p := n.Attr("prompt", ""); p != "" {
+		return p
+	}
+	return n.Attr("llm_prompt", "")
 }
 
 func (n *Node) ClassList() []string {

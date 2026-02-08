@@ -33,6 +33,9 @@ func resolveFidelityMode(g *model.Graph, incoming *model.Edge, node *model.Node)
 	}
 	if candidate == "" && g != nil {
 		candidate = strings.TrimSpace(g.Attrs["default_fidelity"])
+		if candidate == "" {
+			candidate = strings.TrimSpace(g.Attrs["context_fidelity_default"])
+		}
 	}
 	if candidate == "" {
 		candidate = "compact"
@@ -63,6 +66,9 @@ func resolveThreadKey(g *model.Graph, incoming *model.Edge, node *model.Node) st
 	}
 	if g != nil {
 		if v := strings.TrimSpace(g.Attrs["thread_id"]); v != "" {
+			return v
+		}
+		if v := strings.TrimSpace(g.Attrs["context_thread_default"]); v != "" {
 			return v
 		}
 	}
