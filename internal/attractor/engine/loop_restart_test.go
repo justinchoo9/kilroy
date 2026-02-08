@@ -49,7 +49,7 @@ digraph G {
 		fn: func(ctx context.Context, exec *Execution, node *model.Node, prompt string) (string, *runtime.Outcome, error) {
 			n := callCount.Add(1)
 			if node.ID == "work" && n == 1 {
-				return "fail", &runtime.Outcome{Status: runtime.StatusFail, FailureReason: "first try"}, nil
+				return "fail", &runtime.Outcome{Status: runtime.StatusFail, FailureReason: "connection reset by peer"}, nil
 			}
 			return "ok", &runtime.Outcome{Status: runtime.StatusSuccess}, nil
 		},
@@ -143,7 +143,7 @@ digraph G {
 
 	backend := &countingBackend{
 		fn: func(ctx context.Context, exec *Execution, node *model.Node, prompt string) (string, *runtime.Outcome, error) {
-			return "fail", &runtime.Outcome{Status: runtime.StatusFail, FailureReason: "always fail"}, nil
+			return "fail", &runtime.Outcome{Status: runtime.StatusFail, FailureReason: "request timeout after 10s"}, nil
 		},
 	}
 
@@ -172,6 +172,130 @@ digraph G {
 	}
 	if !strings.Contains(err.Error(), "loop_restart limit exceeded") {
 		t.Fatalf("expected loop_restart limit error, got: %v", err)
+	}
+}
+
+func TestRun_LoopRestartDeterministicFailure_DoesNotRestart(t *testing.T) {
+	repo := t.TempDir()
+	runCmd(t, repo, "git", "init")
+	runCmd(t, repo, "git", "config", "user.name", "tester")
+	runCmd(t, repo, "git", "config", "user.email", "tester@example.com")
+	_ = os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644)
+	runCmd(t, repo, "git", "add", "-A")
+	runCmd(t, repo, "git", "commit", "-m", "init")
+
+	dot := []byte(`
+digraph G {
+  graph [goal="test deterministic no restart", max_restarts="5"]
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  work  [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="do work"]
+  check [shape=diamond]
+  start -> work
+  work -> check
+  check -> exit [condition="outcome=success"]
+  check -> work [condition="outcome=fail", loop_restart=true]
+}
+`)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	backend := &countingBackend{
+		fn: func(ctx context.Context, exec *Execution, node *model.Node, prompt string) (string, *runtime.Outcome, error) {
+			return "fail", &runtime.Outcome{Status: runtime.StatusFail, FailureReason: "unknown flag: --verbose"}, nil
+		},
+	}
+
+	g, _, err := Prepare(dot)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	logsRoot := t.TempDir()
+	eng := &Engine{
+		Graph:           g,
+		Options:         RunOptions{RepoPath: repo, RunID: "test-deterministic-no-restart", LogsRoot: logsRoot, WorktreeDir: filepath.Join(logsRoot, "worktree"), RunBranchPrefix: "attractor/run", RequireClean: true},
+		DotSource:       dot,
+		LogsRoot:        logsRoot,
+		WorktreeDir:     filepath.Join(logsRoot, "worktree"),
+		Context:         runtime.NewContext(),
+		Registry:        NewDefaultRegistry(),
+		Interviewer:     &AutoApproveInterviewer{},
+		CodergenBackend: backend,
+	}
+	eng.RunBranch = "attractor/run/test-deterministic-no-restart"
+
+	_, err = eng.run(ctx)
+	if err == nil {
+		t.Fatalf("expected deterministic loop_restart block error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failure_class=deterministic") {
+		t.Fatalf("expected deterministic failure class in error, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(logsRoot, "restart-1")); statErr == nil {
+		t.Fatalf("restart-1 should not exist for deterministic failure")
+	}
+}
+
+func TestRun_LoopRestartCircuitBreaksRepeatedTransientSignature(t *testing.T) {
+	repo := t.TempDir()
+	runCmd(t, repo, "git", "init")
+	runCmd(t, repo, "git", "config", "user.name", "tester")
+	runCmd(t, repo, "git", "config", "user.email", "tester@example.com")
+	_ = os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644)
+	runCmd(t, repo, "git", "add", "-A")
+	runCmd(t, repo, "git", "commit", "-m", "init")
+
+	dot := []byte(`
+digraph G {
+  graph [goal="test transient circuit", max_restarts="8", restart_signature_limit="2"]
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  work  [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="do work"]
+  check [shape=diamond]
+  start -> work
+  work -> check
+  check -> exit [condition="outcome=success"]
+  check -> work [condition="outcome=fail", loop_restart=true]
+}
+`)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	backend := &countingBackend{
+		fn: func(ctx context.Context, exec *Execution, node *model.Node, prompt string) (string, *runtime.Outcome, error) {
+			return "fail", &runtime.Outcome{Status: runtime.StatusFail, FailureReason: "request timeout after 10s"}, nil
+		},
+	}
+
+	g, _, err := Prepare(dot)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	logsRoot := t.TempDir()
+	eng := &Engine{
+		Graph:           g,
+		Options:         RunOptions{RepoPath: repo, RunID: "test-circuit", LogsRoot: logsRoot, WorktreeDir: filepath.Join(logsRoot, "worktree"), RunBranchPrefix: "attractor/run", RequireClean: true},
+		DotSource:       dot,
+		LogsRoot:        logsRoot,
+		WorktreeDir:     filepath.Join(logsRoot, "worktree"),
+		Context:         runtime.NewContext(),
+		Registry:        NewDefaultRegistry(),
+		Interviewer:     &AutoApproveInterviewer{},
+		CodergenBackend: backend,
+	}
+	eng.RunBranch = "attractor/run/test-circuit"
+
+	_, err = eng.run(ctx)
+	if err == nil {
+		t.Fatalf("expected loop_restart circuit breaker error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failure_signature") || !strings.Contains(err.Error(), "threshold=2") {
+		t.Fatalf("expected signature circuit details in error, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(logsRoot, "restart-3")); statErr == nil {
+		t.Fatalf("restart-3 should not exist when signature limit=2")
 	}
 }
 

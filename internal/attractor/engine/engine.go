@@ -103,9 +103,10 @@ type Engine struct {
 	Warnings   []string
 
 	// loop_restart state (attractor-spec §3.2 Step 7).
-	restartCount int
-	baseLogsRoot string // original LogsRoot before any restarts
-	baseSHA      string // HEAD SHA at run start, needed for restart manifests
+	restartCount           int
+	restartSignatureCounts map[string]int
+	baseLogsRoot           string // original LogsRoot before any restarts
+	baseSHA                string // HEAD SHA at run start, needed for restart manifests
 
 	progressMu sync.Mutex
 
@@ -542,7 +543,7 @@ func (e *Engine) runLoop(ctx context.Context, current string, completed []string
 		// loop_restart (attractor-spec §3.2 Step 7): terminate current run, re-launch
 		// with a fresh log directory starting at the edge's target node.
 		if strings.EqualFold(next.Attr("loop_restart", "false"), "true") {
-			return e.loopRestart(ctx, next.To)
+			return e.loopRestart(ctx, next.To, node.ID, out)
 		}
 		e.incomingEdge = next
 		current = next.To
@@ -552,7 +553,39 @@ func (e *Engine) runLoop(ctx context.Context, current string, completed []string
 // loopRestart implements attractor-spec §3.2 Step 7: terminate the current run iteration
 // and re-launch with a fresh log directory, starting at the given target node.
 // The worktree is preserved (code changes carry over); only per-node log directories are fresh.
-func (e *Engine) loopRestart(ctx context.Context, targetNodeID string) (*Result, error) {
+func (e *Engine) loopRestart(ctx context.Context, targetNodeID string, failedNodeID string, out runtime.Outcome) (*Result, error) {
+	fclass := classifyFailureClass(out)
+	signature := restartFailureSignature(out)
+	signatureLimit := parseInt(e.Graph.Attrs["restart_signature_limit"], 3)
+	if signatureLimit < 1 {
+		signatureLimit = 1
+	}
+	if fclass != failureClassTransientInfra {
+		return nil, fmt.Errorf(
+			"loop_restart blocked: failure_class=%s failure_signature=%s count=%d threshold=%d node=%s",
+			fclass,
+			signature,
+			1,
+			signatureLimit,
+			failedNodeID,
+		)
+	}
+	if e.restartSignatureCounts == nil {
+		e.restartSignatureCounts = map[string]int{}
+	}
+	signatureCount := e.restartSignatureCounts[signature] + 1
+	e.restartSignatureCounts[signature] = signatureCount
+	if signatureCount > signatureLimit {
+		return nil, fmt.Errorf(
+			"loop_restart circuit breaker tripped: failure_class=%s failure_signature=%s count=%d threshold=%d node=%s",
+			fclass,
+			signature,
+			signatureCount,
+			signatureLimit,
+			failedNodeID,
+		)
+	}
+
 	e.restartCount++
 	maxRestarts := parseInt(e.Graph.Attrs["max_restarts"], 50)
 	if e.restartCount > maxRestarts {
@@ -566,10 +599,15 @@ func (e *Engine) loopRestart(ctx context.Context, targetNodeID string) (*Result,
 	}
 
 	e.appendProgress(map[string]any{
-		"event":         "loop_restart",
-		"restart_count": e.restartCount,
-		"target_node":   targetNodeID,
-		"new_logs_root": newLogsRoot,
+		"event":             "loop_restart",
+		"restart_count":     e.restartCount,
+		"target_node":       targetNodeID,
+		"new_logs_root":     newLogsRoot,
+		"failure_class":     string(fclass),
+		"failure_signature": signature,
+		"signature_count":   signatureCount,
+		"signature_limit":   signatureLimit,
+		"failed_node_id":    failedNodeID,
 	})
 
 	// Switch to fresh logs; worktree stays the same.
