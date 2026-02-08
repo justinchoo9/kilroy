@@ -112,7 +112,7 @@ kilroy attractor resume --run-branch attractor/run/<id> [--repo <path>]
 | Method | Use When |
 |--------|----------|
 | `--logs-root` | You have the logs directory path (printed by `run`) |
-| `--cxdb` | Logs directory is lost but CXDB is running |
+| `--cxdb` | You lost the printed `logs_root`, but CXDB is running and can be used to recover the recorded `logs_root`/checkpoint path |
 | `--run-branch` | Both logs and CXDB are unavailable; git branch exists |
 
 Resume resets the worktree to the last checkpoint commit and continues from the next node.
