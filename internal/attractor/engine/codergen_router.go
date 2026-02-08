@@ -702,8 +702,21 @@ func (r *CodergenRouter) runCLI(ctx context.Context, execCtx *Execution, node *m
 		defer func() { _ = stderrFile.Close() }()
 		cmd.Stdout = stdoutFile
 		cmd.Stderr = stderrFile
+
 		start := time.Now()
-		runErr = cmd.Run()
+		if err := cmd.Start(); err != nil {
+			return nil, -1, 0, err
+		}
+		idleTimeout := time.Duration(0)
+		killGrace := time.Duration(0)
+		if providerKey == "openai" {
+			idleTimeout = codexIdleTimeout()
+			killGrace = codexKillGrace()
+		}
+		runErr, _, err = waitWithIdleWatchdog(ctx, cmd, stdoutPath, stderrPath, idleTimeout, killGrace)
+		if err != nil {
+			return nil, -1, time.Since(start), err
+		}
 		dur = time.Since(start)
 		exitCode = -1
 		if cmd.ProcessState != nil {
@@ -883,6 +896,120 @@ func mergeEnvWithOverrides(base []string, overrides map[string]string) []string 
 		out = append(out, k+"="+overrides[k])
 	}
 	return out
+}
+
+func codexIdleTimeout() time.Duration {
+	v := strings.TrimSpace(os.Getenv("KILROY_CODEX_IDLE_TIMEOUT"))
+	if v == "" {
+		return 2 * time.Minute
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 2 * time.Minute
+	}
+	return d
+}
+
+func codexKillGrace() time.Duration {
+	v := strings.TrimSpace(os.Getenv("KILROY_CODEX_KILL_GRACE"))
+	if v == "" {
+		return 2 * time.Second
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 2 * time.Second
+	}
+	return d
+}
+
+func waitWithIdleWatchdog(ctx context.Context, cmd *exec.Cmd, stdoutPath, stderrPath string, idleTimeout, killGrace time.Duration) (runErr error, timedOut bool, err error) {
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+	if idleTimeout <= 0 {
+		runErr := <-waitCh
+		return runErr, false, nil
+	}
+
+	const pollInterval = 250 * time.Millisecond
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	lastActivity := time.Now()
+	lastStdoutSize, _ := fileSize(stdoutPath)
+	lastStderrSize, _ := fileSize(stderrPath)
+	for {
+		select {
+		case waitErr := <-waitCh:
+			return waitErr, false, nil
+		case <-ticker.C:
+			stdoutSize, _ := fileSize(stdoutPath)
+			stderrSize, _ := fileSize(stderrPath)
+			if stdoutSize != lastStdoutSize || stderrSize != lastStderrSize {
+				lastActivity = time.Now()
+				lastStdoutSize = stdoutSize
+				lastStderrSize = stderrSize
+			}
+			if time.Since(lastActivity) < idleTimeout {
+				continue
+			}
+			timeoutErr := fmt.Errorf("codex idle timeout after %s with no output", idleTimeout)
+			if err := killProcessGroup(cmd, syscall.SIGTERM); err != nil {
+				return timeoutErr, true, err
+			}
+			if killGrace > 0 {
+				select {
+				case <-waitCh:
+					return timeoutErr, true, nil
+				case <-time.After(killGrace):
+				}
+			}
+			if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
+				return timeoutErr, true, err
+			}
+			select {
+			case <-waitCh:
+				return timeoutErr, true, nil
+			case <-time.After(2 * time.Second):
+				return timeoutErr, true, fmt.Errorf("timed out waiting for process exit after SIGKILL")
+			}
+		case <-ctx.Done():
+			waitErr := <-waitCh
+			if waitErr == nil {
+				waitErr = ctx.Err()
+			}
+			return waitErr, false, nil
+		}
+	}
+}
+
+func fileSize(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return info.Size(), nil
+}
+
+func killProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	pgid, err := syscall.Getpgid(cmd.Process.Pid)
+	if err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return err
+	}
+	if err := syscall.Kill(-pgid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	return nil
 }
 
 func emitCXDBToolTurns(ctx context.Context, eng *Engine, nodeID string, ev agent.SessionEvent) {
