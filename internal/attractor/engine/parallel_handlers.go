@@ -262,7 +262,18 @@ func (h *FanInHandler) Execute(ctx context.Context, exec *Execution, node *model
 
 	winner, ok := selectHeuristicWinner(results)
 	if !ok {
-		return runtime.Outcome{Status: runtime.StatusFail, FailureReason: "all parallel branches failed"}, nil
+		failureClass := classifyParallelAllFailFailureClass(results)
+		return runtime.Outcome{
+			Status:        runtime.StatusFail,
+			FailureReason: "all parallel branches failed",
+			Meta: map[string]any{
+				"failure_class":     failureClass,
+				"failure_signature": parallelAllFailSignature(results, failureClass),
+			},
+			ContextUpdates: map[string]any{
+				"failure_class": failureClass,
+			},
+		}, nil
 	}
 
 	// Fast-forward the main run branch to the winner head.
@@ -375,6 +386,48 @@ func selectHeuristicWinner(results []parallelBranchResult) (parallelBranchResult
 		return cands[i].HeadSHA < cands[j].HeadSHA
 	})
 	return cands[0], true
+}
+
+func classifyParallelAllFailFailureClass(results []parallelBranchResult) string {
+	if len(results) == 0 {
+		return failureClassDeterministic
+	}
+	for _, r := range results {
+		cls := normalizedFailureClassOrDefault(readFailureClassHint(r.Outcome))
+		if cls != failureClassTransientInfra {
+			return failureClassDeterministic
+		}
+	}
+	return failureClassTransientInfra
+}
+
+func parallelAllFailSignature(results []parallelBranchResult, failureClass string) string {
+	parts := make([]string, 0, len(results))
+	for _, r := range results {
+		reason := normalizeFailureReason(r.Outcome.FailureReason)
+		if reason == "" {
+			reason = "status=" + strings.ToLower(strings.TrimSpace(string(r.Outcome.Status)))
+		}
+		key := strings.TrimSpace(r.BranchKey)
+		if key == "" {
+			key = strings.TrimSpace(r.BranchName)
+		}
+		if key == "" {
+			key = "unknown"
+		}
+		parts = append(parts, key+":"+reason)
+	}
+	sort.Strings(parts)
+	sig := fmt.Sprintf(
+		"parallel_all_failed|%s|branches=%d|%s",
+		normalizedFailureClassOrDefault(failureClass),
+		len(results),
+		strings.Join(parts, ";"),
+	)
+	if len(sig) > 512 {
+		sig = sig[:512]
+	}
+	return sig
 }
 
 func findJoinFanInNode(g *model.Graph, branches []*model.Edge) (string, error) {
