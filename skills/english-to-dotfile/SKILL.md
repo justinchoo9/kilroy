@@ -19,6 +19,8 @@ When invoked programmatically (via CLI), output ONLY the raw `.dot` file content
 
 **Exception (programmatic disambiguation):** If you cannot confidently generate a correct `.dot` file because the user's request is ambiguous in a load-bearing way (identity/meaning) and you cannot ask questions (CLI ingest), output a short clarification request and STOP. In this exception case, do NOT output any `digraph` at all. Start the output with `NEEDS_CLARIFICATION` and include exactly one disambiguation question plus 2-5 concrete options anchored by repo evidence (paths/names).
 
+**Exception (programmatic validation failure):** If after the self-validation/repair loop (Phase 6, max 10 attempts) you still cannot produce a `.dot` that passes validation, output a short failure report and STOP. Do NOT output any `digraph` at all. Start the output with `DOT_VALIDATION_FAILED` and include the last validator errors.
+
 When invoked interactively (in conversation), you may include explanatory text.
 
 ## Process
@@ -354,6 +356,40 @@ Use Phase 0B to decide concrete model IDs, providers, executor plan, parallelism
 
 - Assign `class` attributes based on Phase 2 complexity and node role: default, `hard`, `verify`, `review`.
 - Encode the chosen plan in the graph `model_stylesheet` so nodes inherit `llm_provider`, `llm_model`, and (optionally) `reasoning_effort`.
+
+### Phase 6: Self-Validate and Auto-Repair the DOT (Iterate Until It Passes, Cap 10)
+
+Before emitting the final output, you MUST validate the candidate DOT locally and repair any issues, iterating until it passes or you hit the attempt cap (10).
+
+Run these validators (both when available):
+
+1. Graphviz parser check (if `dot` is installed):
+   - `dot -Tsvg <graph.dot> -o /dev/null`
+2. Kilroy Attractor validator:
+   - Prefer `./kilroy attractor validate --graph <graph.dot>` if `./kilroy` exists
+   - Otherwise use `go run ./cmd/kilroy attractor validate --graph <graph.dot>`
+
+Repair loop (max 10 attempts):
+
+1. Draft the DOT in memory as `candidate_dot` (still follow all rules above).
+2. For attempt 1..10:
+   - Write `candidate_dot` to a temporary file (prefer `mktemp`; otherwise write under `.ai/`).
+   - Run Graphviz check (if available). Capture the error output.
+   - Run Kilroy validate. Capture the diagnostics.
+   - If BOTH succeed, stop and emit exactly `candidate_dot` as your final response.
+   - If either fails, apply the smallest possible edits to `candidate_dot` to address the reported errors, then retry.
+3. If attempt 10 still fails:
+   - Programmatic mode: output `DOT_VALIDATION_FAILED` with the last error messages and STOP (no digraph).
+   - Interactive mode: explain what failed and include the last error messages (do not pretend it validates).
+
+Common repairs (use validator output; do not guess blindly):
+
+- Remove any non-DOT text outside the `digraph { ... }`.
+- Fix quoting/escaping in string attributes (especially `model_stylesheet` and `prompt`).
+- Ensure required graph attrs exist: `goal`, `model_stylesheet`, `default_max_retry`, `retry_target`, `fallback_retry_target`.
+- Ensure exactly one `start` and one `exit`, with correct `shape` and reachability.
+- Fix missing semicolons / commas / brackets in node/edge attribute lists.
+- Replace edge `label="success"` style routing with proper `condition="outcome=..."`.
 
 ## Kilroy DSL Quick Reference
 
