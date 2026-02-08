@@ -46,7 +46,7 @@ kilroy attractor ingest [flags] <requirements>
 kilroy attractor ingest -o pipeline.dot "Build a Go CLI link checker with robots.txt support"
 
 # Reference an existing spec
-kilroy attractor ingest -o pipeline.dot "Build DTTF per specs/dttf-v1.md"
+kilroy attractor ingest -o pipeline.dot "Build DTTF per demo/dttf/dttf-v1.md"
 
 # Use Opus for complex requirements
 kilroy attractor ingest --model claude-opus-4-6 -o pipeline.dot "Build a distributed task queue"

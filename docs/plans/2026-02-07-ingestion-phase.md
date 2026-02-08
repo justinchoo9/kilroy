@@ -41,7 +41,7 @@ claude -p \
   --model claude-sonnet-4-5 \
   --max-turns 3 \
   --dangerously-skip-permissions \
-  "Build DTTF per the spec at specs/dttf-v1.md"
+  "Build DTTF per the spec at demo/dttf/dttf-v1.md"
 ```
 
 - `--append-system-prompt-file`: Loads skill as system prompt addition (keeps Claude Code defaults)
@@ -975,20 +975,20 @@ Run:
 /tmp/kilroy attractor ingest \
   --output /tmp/test-ingest-dttf.dot \
   --skill skills/english-to-dotfile/SKILL.md \
-  "Build DTTF per the spec at specs/dttf-v1.md"
+  "Build DTTF per the spec at demo/dttf/dttf-v1.md"
 ```
 
 Expected:
 - A larger `.dot` file is written
 - Validates cleanly
 - The `.dot` file should NOT have an `expand_spec` node (spec already exists)
-- All nodes should reference `specs/dttf-v1.md`
+- All nodes should reference `demo/dttf/dttf-v1.md`
 
 **Step 5: Verify the generated .dot file content**
 
 For the DTTF output, manually check:
 - `grep 'expand_spec' /tmp/test-ingest-dttf.dot` → should find nothing
-- `grep 'specs/dttf-v1.md' /tmp/test-ingest-dttf.dot` → should find multiple references
+- `grep 'demo/dttf/dttf-v1.md' /tmp/test-ingest-dttf.dot` → should find multiple references
 - `grep 'class="verify"' /tmp/test-ingest-dttf.dot` → should find matches for all verify nodes
 - `grep 'fallback_retry_target' /tmp/test-ingest-dttf.dot` → should find one match
 - `grep 'Goal: \$goal' /tmp/test-ingest-dttf.dot` → should find matches in all impl prompts
@@ -1043,9 +1043,9 @@ git commit -m "Complete kilroy attractor ingest command: English requirements to
 ## Summary: What Gets Built
 
 ```
-User: "Build DTTF per the spec at specs/dttf-v1.md"
+User: "Build DTTF per the spec at demo/dttf/dttf-v1.md"
   ↓
-kilroy attractor ingest --output pipeline.dot "Build DTTF per the spec at specs/dttf-v1.md"
+kilroy attractor ingest --output pipeline.dot "Build DTTF per the spec at demo/dttf/dttf-v1.md"
   ↓
 Spawns: claude -p \
   --append-system-prompt-file skills/english-to-dotfile/SKILL.md \
@@ -1053,7 +1053,7 @@ Spawns: claude -p \
   --model claude-sonnet-4-5 \
   --max-turns 3 \
   --dangerously-skip-permissions \
-  "Build DTTF per the spec at specs/dttf-v1.md"
+  "Build DTTF per the spec at demo/dttf/dttf-v1.md"
   ↓
 Claude Code generates .dot content (guided by SKILL.md)
   ↓

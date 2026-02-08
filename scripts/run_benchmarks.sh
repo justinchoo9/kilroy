@@ -203,10 +203,10 @@ PY
   # Fresh git repo to operate on.
   local repo="$workdir/repo"
   mkdir -p "$repo"
-  # Seed the benchmark repo with in-repo spec fixtures used by some graphs (e.g. specs/dttf-v1.md).
+  # Seed the benchmark repo with in-repo spec fixtures used by some graphs (e.g. demo/dttf/dttf-v1.md).
   # This keeps runs isolated (fresh repo) while still allowing pipelines to reference stable spec inputs.
-  if [[ -d "$ROOT/specs" ]]; then
-    cp -R "$ROOT/specs" "$repo/"
+  if [[ -d "$ROOT/demo" ]]; then
+    cp -R "$ROOT/demo" "$repo/"
   fi
   (cd "$repo" && git init -q && git config user.name tester && git config user.email tester@example.com && echo "hello" > README.md && git add -A && git commit -qm init)
 

@@ -13,7 +13,7 @@ A positional argument containing English-language requirements. Ranges from a si
 ```
 "solitaire plz"
 "Build a Go CLI link checker with robots.txt support and JSON output"
-"Build DTTF per the spec at specs/dttf-v1.md"
+"Build DTTF per the spec at demo/dttf/dttf-v1.md"
 ```
 
 Multiple positional words are joined with spaces.
@@ -204,7 +204,7 @@ When `--skill` is not specified, the ingestor looks for `skills/english-to-dotfi
 kilroy attractor ingest "solitaire plz"
 
 # Spec reference, output to file
-kilroy attractor ingest --output pipeline.dot "Build DTTF per the spec at specs/dttf-v1.md"
+kilroy attractor ingest --output pipeline.dot "Build DTTF per the spec at demo/dttf/dttf-v1.md"
 
 # Custom model, skip validation
 kilroy attractor ingest --model claude-opus-4-6 --no-validate "Build a REST API"
@@ -258,7 +258,7 @@ The ingestor produces `.dot` files that feed directly into the Attractor engine:
 
 ```bash
 # Step 1: Ingest requirements into a pipeline
-kilroy attractor ingest --output pipeline.dot "Build DTTF per the spec at specs/dttf-v1.md"
+kilroy attractor ingest --output pipeline.dot "Build DTTF per the spec at demo/dttf/dttf-v1.md"
 
 # Step 2: Execute the pipeline
 kilroy attractor run --graph pipeline.dot --config run.yaml
