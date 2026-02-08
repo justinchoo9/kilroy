@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/strongdm/kilroy/internal/attractor/model"
@@ -121,6 +123,22 @@ func runProviderCLIPreflight(ctx context.Context, g *model.Graph, cfg *RunConfig
 			}
 			continue
 		}
+		if !probeOutputLooksLikeHelp(provider, output) {
+			status := preflightStatusWarn
+			if report.StrictCapabilities {
+				status = preflightStatusFail
+			}
+			report.addCheck(providerPreflightCheck{
+				Name:     "provider_cli_capabilities",
+				Provider: provider,
+				Status:   status,
+				Message:  "capability probe output was not recognizable help text",
+			})
+			if report.StrictCapabilities {
+				return report, fmt.Errorf("preflight: provider %s capability probe output not parseable as help", provider)
+			}
+			continue
+		}
 
 		missing := missingCapabilityTokens(provider, output)
 		if len(missing) > 0 {
@@ -210,16 +228,55 @@ func runProviderCapabilityProbe(ctx context.Context, provider string, exePath st
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(probeCtx, exePath, argv...)
+	cmd := exec.Command(exePath, argv...)
 	cmd.Stdin = strings.NewReader("")
-	out, err := cmd.CombinedOutput()
-	if probeCtx.Err() == context.DeadlineExceeded {
-		return "", fmt.Errorf("probe timed out after 3s")
-	}
-	if err != nil {
+	cmd.Env = scrubPreflightProbeEnv(os.Environ())
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("probe command failed: %w", err)
 	}
-	help := strings.TrimSpace(string(out))
+
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- cmd.Wait() }()
+
+	select {
+	case err := <-waitCh:
+		if err != nil {
+			return "", fmt.Errorf("probe command failed: %w", err)
+		}
+	case <-probeCtx.Done():
+		_ = killProcessGroup(cmd, syscall.SIGTERM)
+		select {
+		case <-waitCh:
+		case <-time.After(250 * time.Millisecond):
+			_ = killProcessGroup(cmd, syscall.SIGKILL)
+			select {
+			case <-waitCh:
+			case <-time.After(2 * time.Second):
+			}
+		}
+		if probeCtx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("probe timed out after 3s")
+		}
+		return "", fmt.Errorf("probe canceled: %w", probeCtx.Err())
+	case <-ctx.Done():
+		_ = killProcessGroup(cmd, syscall.SIGTERM)
+		select {
+		case <-waitCh:
+		case <-time.After(250 * time.Millisecond):
+			_ = killProcessGroup(cmd, syscall.SIGKILL)
+			select {
+			case <-waitCh:
+			case <-time.After(2 * time.Second):
+			}
+		}
+		return "", fmt.Errorf("probe canceled: %w", ctx.Err())
+	}
+
+	help := strings.TrimSpace(out.String())
 	if help == "" {
 		return "", fmt.Errorf("probe output empty")
 	}
@@ -261,6 +318,44 @@ func missingCapabilityTokens(provider string, helpOutput string) []string {
 		}
 	}
 	return missing
+}
+
+func probeOutputLooksLikeHelp(provider string, output string) bool {
+	text := strings.ToLower(strings.TrimSpace(output))
+	if text == "" {
+		return false
+	}
+	switch normalizeProviderKey(provider) {
+	case "openai":
+		return strings.Contains(text, "usage") || strings.Contains(text, "--json") || strings.Contains(text, "--sandbox")
+	case "anthropic":
+		return strings.Contains(text, "usage") || strings.Contains(text, "--output-format")
+	case "google":
+		return strings.Contains(text, "usage") || strings.Contains(text, "--output-format")
+	default:
+		return true
+	}
+}
+
+func scrubPreflightProbeEnv(base []string) []string {
+	if len(base) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(base))
+	for _, entry := range base {
+		key := entry
+		if idx := strings.IndexByte(entry, '='); idx >= 0 {
+			key = entry[:idx]
+		}
+		if strings.HasPrefix(key, "KILROY_TEST_") ||
+			strings.HasPrefix(key, "KILROY_WATCHDOG_") ||
+			strings.HasPrefix(key, "KILROY_CANCEL_") ||
+			key == "KILROY_CALL_COUNT_FILE" {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func (r *providerPreflightReport) addCheck(check providerPreflightCheck) {
