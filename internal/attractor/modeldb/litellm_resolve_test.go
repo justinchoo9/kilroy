@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,7 +14,7 @@ import (
 func TestResolveLiteLLMCatalog_PinnedOnly(t *testing.T) {
 	dir := t.TempDir()
 	pinned := filepath.Join(dir, "pinned.json")
-	if err := os.WriteFile(pinned, []byte(`{"m":{"litellm_provider":"openai","mode":"chat"}}`), 0o644); err != nil {
+	if err := os.WriteFile(pinned, []byte(`{"data":[{"id":"openai/gpt-5"}]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -27,18 +28,21 @@ func TestResolveLiteLLMCatalog_PinnedOnly(t *testing.T) {
 	if res.Source != pinned {
 		t.Fatalf("source: got %q want %q", res.Source, pinned)
 	}
+	if !strings.HasSuffix(res.SnapshotPath, "modeldb/openrouter_models.json") {
+		t.Fatalf("snapshot path: got %q", res.SnapshotPath)
+	}
 }
 
 func TestResolveLiteLLMCatalog_OnRunStartFetch(t *testing.T) {
 	dir := t.TempDir()
 	pinned := filepath.Join(dir, "pinned.json")
-	if err := os.WriteFile(pinned, []byte(`{"m":{"litellm_provider":"openai","mode":"chat"}}`), 0o644); err != nil {
+	if err := os.WriteFile(pinned, []byte(`{"data":[{"id":"openai/gpt-5"}]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"m2":{"litellm_provider":"anthropic","mode":"chat"}}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":"anthropic/claude-4"}]}`))
 	}))
 	defer srv.Close()
 
