@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/strongdm/kilroy/internal/attractor/model"
+	"github.com/strongdm/kilroy/internal/providerspec"
 )
 
 const (
@@ -332,8 +333,8 @@ func runProviderModelAccessProbe(ctx context.Context, provider string, exePath s
 
 func runProviderCapabilityProbe(ctx context.Context, provider string, exePath string) (string, error) {
 	argv := []string{"--help"}
-	if normalizeProviderKey(provider) == "openai" {
-		argv = []string{"exec", "--help"}
+	if spec := defaultCLISpecForProvider(provider); spec != nil && len(spec.HelpProbeArgs) > 0 {
+		argv = append([]string{}, spec.HelpProbeArgs...)
 	}
 	help, err := runProviderProbe(ctx, exePath, argv, 3*time.Second)
 	if err != nil {
@@ -395,21 +396,16 @@ func runProviderProbe(ctx context.Context, exePath string, argv []string, timeou
 }
 
 func missingCapabilityTokens(provider string, helpOutput string) []string {
-	text := strings.ToLower(helpOutput)
-	all := []string{}
-	anyOf := [][]string{}
-	switch normalizeProviderKey(provider) {
-	case "anthropic":
-		all = []string{"--output-format", "stream-json", "--verbose"}
-	case "google":
-		all = []string{"--output-format"}
-		anyOf = append(anyOf, []string{"--yolo", "--approval-mode"})
-	case "openai":
-		all = []string{"--json", "--sandbox"}
-	default:
+	return missingCapabilityTokensFromSpec(defaultCLISpecForProvider(provider), helpOutput)
+}
+
+func missingCapabilityTokensFromSpec(spec *providerspec.CLISpec, helpOutput string) []string {
+	if spec == nil {
 		return nil
 	}
-
+	text := strings.ToLower(helpOutput)
+	all := append([]string{}, spec.CapabilityAll...)
+	anyOf := append([][]string{}, spec.CapabilityAnyOf...)
 	missing := []string{}
 	for _, token := range all {
 		if !strings.Contains(text, token) {
@@ -432,20 +428,23 @@ func missingCapabilityTokens(provider string, helpOutput string) []string {
 }
 
 func probeOutputLooksLikeHelp(provider string, output string) bool {
+	return probeOutputLooksLikeHelpFromSpec(defaultCLISpecForProvider(provider), output)
+}
+
+func probeOutputLooksLikeHelpFromSpec(spec *providerspec.CLISpec, output string) bool {
 	text := strings.ToLower(strings.TrimSpace(output))
 	if text == "" {
 		return false
 	}
-	switch normalizeProviderKey(provider) {
-	case "openai":
-		return strings.Contains(text, "usage") || strings.Contains(text, "--json") || strings.Contains(text, "--sandbox")
-	case "anthropic":
-		return strings.Contains(text, "usage") || strings.Contains(text, "--output-format")
-	case "google":
-		return strings.Contains(text, "usage") || strings.Contains(text, "--output-format")
-	default:
-		return true
+	if spec == nil || len(spec.CapabilityAll) == 0 {
+		return strings.Contains(text, "usage")
 	}
+	for _, token := range spec.CapabilityAll {
+		if strings.Contains(text, strings.ToLower(token)) {
+			return true
+		}
+	}
+	return strings.Contains(text, "usage")
 }
 
 func scrubPreflightProbeEnv(base []string) []string {

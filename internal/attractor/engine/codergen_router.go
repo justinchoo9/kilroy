@@ -733,6 +733,7 @@ func (r *CodergenRouter) runCLI(ctx context.Context, execCtx *Execution, node *m
 		return "", classifiedFailure(err, ""), nil
 	}
 
+	spec := defaultCLISpecForProvider(provider)
 	defaultExe, args := defaultCLIInvocation(provider, modelID, execCtx.WorktreeDir)
 	if defaultExe == "" {
 		return "", classifiedFailure(fmt.Errorf("no cli invocation mapping for provider %s", provider), ""), nil
@@ -781,8 +782,7 @@ func (r *CodergenRouter) runCLI(ctx context.Context, execCtx *Execution, node *m
 	actualArgs := args
 	recordedArgs := args
 	promptMode := "stdin"
-	switch normalizeProviderKey(provider) {
-	case "anthropic", "google":
+	if spec != nil && strings.EqualFold(strings.TrimSpace(spec.PromptMode), "arg") {
 		promptMode = "arg"
 		actualArgs = insertPromptArg(args, prompt)
 		recordedArgs = insertPromptArg(args, "<prompt>")
@@ -1391,20 +1391,11 @@ func usesCodexCLISemantics(providerKey string, exe string) bool {
 }
 
 func defaultCLIInvocation(provider string, modelID string, worktreeDir string) (exe string, args []string) {
-	switch normalizeProviderKey(provider) {
-	case "openai":
-		exe = "codex"
-		args = []string{"exec", "--json", "--sandbox", "workspace-write", "-m", modelID, "-C", worktreeDir}
-	case "anthropic":
-		exe = "claude"
-		args = []string{"-p", "--output-format", "stream-json", "--verbose", "--model", modelID}
-	case "google":
-		exe = "gemini"
-		// Metaspec: CLI adapters must be non-interactive. Gemini CLI supports this via --yolo / --approval-mode.
-		args = []string{"-p", "--output-format", "stream-json", "--yolo", "--model", modelID}
-	default:
+	spec := defaultCLISpecForProvider(provider)
+	if spec == nil {
 		return "", nil
 	}
+	exe, args = materializeCLIInvocation(*spec, modelID, worktreeDir, "")
 	return exe, args
 }
 
