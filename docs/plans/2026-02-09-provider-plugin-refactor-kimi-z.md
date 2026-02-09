@@ -493,11 +493,23 @@ func TestResolveProviderRuntimes_MergesBuiltinAndConfigOverrides(t *testing.T) {
 		t.Fatalf("expected runtime headers copy, got %v", got)
 	}
 }
+
+func TestResolveProviderRuntimes_RejectsCanonicalAliasCollisions(t *testing.T) {
+	cfg := &RunConfigFile{}
+	cfg.LLM.Providers = map[string]ProviderConfig{
+		"zai":  {Backend: BackendAPI, API: ProviderAPIConfig{Protocol: "openai_chat_completions", APIKeyEnv: "ZAI_API_KEY"}},
+		"z-ai": {Backend: BackendAPI, API: ProviderAPIConfig{Protocol: "openai_chat_completions", APIKeyEnv: "ZAI_API_KEY"}},
+	}
+	_, err := resolveProviderRuntimes(cfg)
+	if err == nil || !strings.Contains(err.Error(), "duplicate provider config after canonicalization") {
+		t.Fatalf("expected canonical collision error, got %v", err)
+	}
+}
 ```
 
 **Step 2: Run test to verify it fails**
 
-Run: `go test ./internal/attractor/engine -run TestResolveProviderRuntimes_MergesBuiltinAndConfigOverrides -v`
+Run: `go test ./internal/attractor/engine -run 'TestResolveProviderRuntimes_MergesBuiltinAndConfigOverrides|TestResolveProviderRuntimes_RejectsCanonicalAliasCollisions' -v`
 Expected: FAIL (`resolveProviderRuntimes` undefined)
 
 **Step 3: Write minimal implementation**
@@ -520,8 +532,13 @@ func (r ProviderRuntime) APIHeaders() map[string]string {
 
 func resolveProviderRuntimes(cfg *RunConfigFile) (map[string]ProviderRuntime, error) {
 	out := map[string]ProviderRuntime{}
+	originByCanonical := map[string]string{}
 	for rawKey, pc := range cfg.LLM.Providers {
 		key := providerspec.CanonicalProviderKey(rawKey)
+		if prevRaw, dup := originByCanonical[key]; dup {
+			return nil, fmt.Errorf("duplicate provider config after canonicalization: %q and %q both map to %q", prevRaw, rawKey, key)
+		}
+		originByCanonical[key] = rawKey
 		b, _ := providerspec.Builtin(key)
 		rt := ProviderRuntime{
 			Key:        key,
@@ -634,7 +651,7 @@ func cloneStringMap(in map[string]string) map[string]string {
 
 **Step 4: Run test to verify it passes**
 
-Run: `go test ./internal/attractor/engine -run TestResolveProviderRuntimes_MergesBuiltinAndConfigOverrides -v`
+Run: `go test ./internal/attractor/engine -run 'TestResolveProviderRuntimes_MergesBuiltinAndConfigOverrides|TestResolveProviderRuntimes_RejectsCanonicalAliasCollisions' -v`
 Expected: PASS
 
 **Step 5: Commit**
@@ -932,8 +949,9 @@ func TestAdapter_Stream_RequestBodyPreservesLargeIntegerOptions(t *testing.T) {
 func TestAdapter_Stream_ParsesMultiLineSSEData(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n"))
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}],\n"))
+		_, _ = w.Write([]byte("data: \"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
@@ -953,11 +971,43 @@ func TestAdapter_Stream_ParsesMultiLineSSEData(t *testing.T) {
 		t.Fatalf("text delta mismatch: %q", text.String())
 	}
 }
+
+func TestAdapter_Stream_UsageOnlyChunkPreservesTokenAccounting(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":7,\"total_tokens\":12}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+	a := NewAdapter(Config{Provider: "zai", APIKey: "k", BaseURL: srv.URL})
+	stream, err := a.Stream(context.Background(), llm.Request{Provider: "zai", Model: "glm-4.7", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var finishUsage llm.Usage
+	sawFinish := false
+	for ev := range stream.Events() {
+		if ev.Type != llm.StreamEventFinish || ev.Usage == nil {
+			continue
+		}
+		sawFinish = true
+		finishUsage = *ev.Usage
+	}
+	if !sawFinish {
+		t.Fatalf("expected finish event")
+	}
+	if finishUsage.TotalTokens != 12 {
+		t.Fatalf("usage mismatch: %#v", finishUsage)
+	}
+}
 ```
 
 **Step 2: Run test to verify it fails**
 
-Run: `go test ./internal/llm/providers/openaicompat -run 'TestAdapter_Complete_ChatCompletionsMapsToolCalls|TestAdapter_Stream_EmitsFinishEvent|TestAdapter_Stream_RequestBodyPreservesLargeIntegerOptions|TestAdapter_Stream_ParsesMultiLineSSEData' -v`
+Run: `go test ./internal/llm/providers/openaicompat -run 'TestAdapter_Complete_ChatCompletionsMapsToolCalls|TestAdapter_Stream_EmitsFinishEvent|TestAdapter_Stream_RequestBodyPreservesLargeIntegerOptions|TestAdapter_Stream_ParsesMultiLineSSEData|TestAdapter_Stream_UsageOnlyChunkPreservesTokenAccounting' -v`
 Expected: FAIL (package/adapter missing)
 
 **Step 3: Write minimal implementation**
@@ -1339,6 +1389,15 @@ func (st *chatStreamState) FinalResponse() llm.Response {
 }
 
 func emitChatCompletionsChunkEvents(s *llm.ChanStream, st *chatStreamState, chunk map[string]any) {
+	if usageMap, ok := chunk["usage"].(map[string]any); ok {
+		st.Usage = llm.Usage{
+			InputTokens:  intFromAny(usageMap["prompt_tokens"]),
+			OutputTokens: intFromAny(usageMap["completion_tokens"]),
+			TotalTokens:  intFromAny(usageMap["total_tokens"]),
+		}
+		st.UsageValid = true
+	}
+
 	choices, _ := chunk["choices"].([]any)
 	if len(choices) == 0 {
 		return
@@ -1364,14 +1423,6 @@ func emitChatCompletionsChunkEvents(s *llm.ChanStream, st *chatStreamState, chun
 		s.Send(llm.StreamEvent{Type: llm.StreamEventStepFinish, FinishReason: &st.Finish})
 	}
 
-	if usageMap, ok := chunk["usage"].(map[string]any); ok {
-		st.Usage = llm.Usage{
-			InputTokens:  intFromAny(usageMap["prompt_tokens"]),
-			OutputTokens: intFromAny(usageMap["completion_tokens"]),
-			TotalTokens:  intFromAny(usageMap["total_tokens"]),
-		}
-		st.UsageValid = true
-	}
 }
 ```
 
