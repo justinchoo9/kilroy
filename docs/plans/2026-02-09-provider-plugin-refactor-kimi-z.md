@@ -703,6 +703,15 @@ func newAPIClientFromProviderRuntimes(runtimes map[string]ProviderRuntime) (*llm
 	}
 	return c, nil
 }
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
 ```
 
 ```go
@@ -892,7 +901,8 @@ func NewAdapter(cfg Config) *Adapter {
 	if cfg.Provider == "" {
 		cfg.Provider = cfg.OptionsKey
 	}
-	return &Adapter{cfg: cfg, client: &http.Client{Timeout: 90 * time.Second}}
+	// Streaming adapters should rely on request context deadlines/cancellation.
+	return &Adapter{cfg: cfg, client: &http.Client{Timeout: 0}}
 }
 
 func (a *Adapter) Name() string { return a.cfg.Provider }
@@ -932,6 +942,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		return nil, err
 	}
 	bodyMap["stream"] = true
+	bodyMap["stream_options"] = map[string]any{"include_usage": true}
 	body, err = json.Marshal(bodyMap)
 	if err != nil {
 		cancel()
@@ -966,7 +977,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		defer resp.Body.Close()
 		defer s.CloseSend()
 		s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
-		acc := llm.NewStreamAccumulator()
+		state := &chatStreamState{Provider: a.cfg.Provider, Model: req.Model, TextID: "assistant_text"}
 		sc := bufio.NewScanner(resp.Body)
 		for sc.Scan() {
 			line := strings.TrimSpace(sc.Text())
@@ -978,7 +989,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				continue
 			}
 			if payload == "[DONE]" {
-				final := acc.BuildResponse(a.cfg.Provider, req.Model)
+				final := state.FinalResponse()
 				s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &final.Finish, Usage: &final.Usage, Response: &final})
 				return
 			}
@@ -987,7 +998,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.NewStreamError(a.cfg.Provider, err.Error())})
 				return
 			}
-			emitChatCompletionsChunkEvents(s, acc, chunk)
+			emitChatCompletionsChunkEvents(s, state, chunk)
 		}
 		if err := sc.Err(); err != nil {
 			s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.NewStreamError(a.cfg.Provider, err.Error())})
@@ -1211,10 +1222,66 @@ func normalizeFinishReason(in string) string {
 	}
 }
 
-func emitChatCompletionsChunkEvents(s *llm.ChanStream, acc *llm.StreamAccumulator, chunk map[string]any) {
-	// Parse delta content/tool_calls from each chunk, update accumulator,
-	// and emit TEXT_DELTA / TOOL_CALL_DELTA / STEP_FINISH events.
-	// (Mirror event semantics used by existing OpenAI/Anthropic/Google adapters.)
+type chatStreamState struct {
+	Provider   string
+	Model      string
+	TextID     string
+	Text       strings.Builder
+	TextOpen   bool
+	Finish     llm.FinishReason
+	Usage      llm.Usage
+	UsageValid bool
+}
+
+func (st *chatStreamState) FinalResponse() llm.Response {
+	msg := llm.Assistant(st.Text.String())
+	finish := st.Finish
+	if strings.TrimSpace(finish.Reason) == "" {
+		finish = llm.FinishReason{Reason: "stop", Raw: "stop"}
+	}
+	return llm.Response{
+		Provider: st.Provider,
+		Model:    st.Model,
+		Message:  msg,
+		Finish:   finish,
+		Usage:    st.Usage,
+	}
+}
+
+func emitChatCompletionsChunkEvents(s *llm.ChanStream, st *chatStreamState, chunk map[string]any) {
+	choices, _ := chunk["choices"].([]any)
+	if len(choices) == 0 {
+		return
+	}
+	choice, _ := choices[0].(map[string]any)
+	delta, _ := choice["delta"].(map[string]any)
+
+	if text, ok := delta["content"].(string); ok && text != "" {
+		if !st.TextOpen {
+			st.TextOpen = true
+			s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: st.TextID})
+		}
+		st.Text.WriteString(text)
+		s.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: st.TextID, Delta: text})
+	}
+
+	if fin := strings.TrimSpace(asString(choice["finish_reason"])); fin != "" {
+		st.Finish = llm.FinishReason{Reason: normalizeFinishReason(fin), Raw: fin}
+		if st.TextOpen {
+			s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: st.TextID})
+			st.TextOpen = false
+		}
+		s.Send(llm.StreamEvent{Type: llm.StreamEventStepFinish, FinishReason: &st.Finish})
+	}
+
+	if usageMap, ok := chunk["usage"].(map[string]any); ok {
+		st.Usage = llm.Usage{
+			InputTokens:  intFromAny(usageMap["prompt_tokens"]),
+			OutputTokens: intFromAny(usageMap["completion_tokens"]),
+			TotalTokens:  intFromAny(usageMap["total_tokens"]),
+		}
+		st.UsageValid = true
+	}
 }
 ```
 
@@ -1302,6 +1369,14 @@ var profileFactories = map[string]func(string) ProviderProfile{
 	"google":    NewGeminiProfile,
 }
 
+func RegisterProfileFamily(family string, factory func(string) ProviderProfile) {
+	k := strings.ToLower(strings.TrimSpace(family))
+	if k == "" || factory == nil {
+		return
+	}
+	profileFactories[k] = factory
+}
+
 func NewProfileForFamily(family string, model string) (ProviderProfile, error) {
 	f := strings.ToLower(strings.TrimSpace(family))
 	factory, ok := profileFactories[f]
@@ -1373,13 +1448,27 @@ func (r *CodergenRouter) ensureAPIClient() {
 }
 
 func (r *CodergenRouter) withFailoverText(ctx context.Context, primaryProvider, modelID, prompt string) (string, string, error) {
+	primaryProvider = providerspec.CanonicalProviderKey(primaryProvider)
 	order := failoverOrderFromRuntime(primaryProvider, r.providerRuntimes)
+	if len(order) == 0 {
+		order = failoverOrder(primaryProvider) // legacy fallback while migrating
+	}
+	lastErr := error(nil)
 	for _, p := range order {
 		m := pickFailoverModelFromRuntime(p, r.providerRuntimes, r.catalog, modelID)
-		// existing attemptRequest/shouldFailover logic unchanged
-		_ = m
+		text, used, err := r.withProviderText(ctx, p, m, prompt)
+		if err == nil {
+			return text, used, nil
+		}
+		lastErr = err
+		if !shouldFailoverLLMError(err) {
+			return "", "", err
+		}
 	}
-	return "", "", fmt.Errorf("failover exhausted")
+	if lastErr != nil {
+		return "", "", lastErr
+	}
+	return "", "", fmt.Errorf("failover exhausted without attempts")
 }
 ```
 
@@ -1653,7 +1742,7 @@ Expected: FAIL (new integration test not yet implemented)
 func TestKimiAndZai_OpenAIChatCompletionsIntegration(t *testing.T) {
 	repo := initTestRepo(t)
 	logsRoot := t.TempDir()
-	pinned := writePinnedCatalog(t)
+	pinned := writeProviderCatalogForTest(t)
 	cxdbSrv := newCXDBTestServer(t)
 
 	var mu sync.Mutex
