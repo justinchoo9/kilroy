@@ -782,7 +782,8 @@ func (r *CodergenRouter) runCLI(ctx context.Context, execCtx *Execution, node *m
 	actualArgs := args
 	recordedArgs := args
 	promptMode := "stdin"
-	if spec != nil && strings.EqualFold(strings.TrimSpace(spec.PromptMode), "arg") {
+	switch normalizeProviderKey(provider) {
+	case "anthropic", "google":
 		promptMode = "arg"
 		actualArgs = insertPromptArg(args, prompt)
 		recordedArgs = insertPromptArg(args, "<prompt>")
