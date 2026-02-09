@@ -2,6 +2,9 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -134,5 +137,69 @@ digraph G {
 	}
 	if !strings.Contains(err.Error(), "KILROY_CODEX_PATH") {
 		t.Fatalf("expected env key in error, got %v", err)
+	}
+}
+
+func TestRunWithConfig_ProfilePolicyFailure_WritesPreflightReport(t *testing.T) {
+	repo := initTestRepo(t)
+	logsRoot := t.TempDir()
+	t.Setenv("KILROY_CODEX_PATH", "/tmp/fake/codex")
+
+	cfg := &RunConfigFile{}
+	cfg.Version = 1
+	cfg.Repo.Path = repo
+	cfg.CXDB.BinaryAddr = "127.0.0.1:9009"
+	cfg.CXDB.HTTPBaseURL = "http://127.0.0.1:9010"
+	cfg.LLM.CLIProfile = "real"
+	cfg.LLM.Providers = map[string]ProviderConfig{
+		"openai": {Backend: BackendCLI},
+	}
+	cfg.ModelDB.LiteLLMCatalogPath = writePinnedCatalog(t)
+	cfg.ModelDB.LiteLLMCatalogUpdatePolicy = "pinned"
+
+	dot := []byte(`
+digraph G {
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="hi"]
+  start -> a -> exit
+}
+`)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := RunWithConfig(ctx, dot, cfg, RunOptions{RunID: "real-env-report", LogsRoot: logsRoot})
+	if err == nil {
+		t.Fatalf("expected policy error, got nil")
+	}
+
+	reportPath := filepath.Join(logsRoot, "preflight_report.json")
+	b, readErr := os.ReadFile(reportPath)
+	if readErr != nil {
+		t.Fatalf("read %s: %v", reportPath, readErr)
+	}
+	var report struct {
+		Summary struct {
+			Fail int `json:"fail"`
+		} `json:"summary"`
+		Checks []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"checks"`
+	}
+	if unmarshalErr := json.Unmarshal(b, &report); unmarshalErr != nil {
+		t.Fatalf("decode preflight report: %v", unmarshalErr)
+	}
+	if report.Summary.Fail == 0 {
+		t.Fatalf("expected fail count in preflight report, got %+v", report.Summary)
+	}
+	found := false
+	for _, check := range report.Checks {
+		if check.Name == "provider_executable_policy" && check.Status == "fail" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected provider_executable_policy fail check, got %+v", report.Checks)
 	}
 }

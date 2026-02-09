@@ -69,6 +69,19 @@ func RunWithConfig(ctx context.Context, dotSource []byte, cfg *RunConfigFile, ov
 		return nil, err
 	}
 	if err := validateRunCLIProfilePolicy(cfg, opts); err != nil {
+		report := &providerPreflightReport{
+			GeneratedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+			CLIProfile:          normalizedCLIProfile(cfg),
+			AllowTestShim:       opts.AllowTestShim,
+			StrictCapabilities:  parseBool(strings.TrimSpace(os.Getenv("KILROY_PREFLIGHT_STRICT_CAPABILITIES")), false),
+			CapabilityProbeMode: capabilityProbeMode(),
+		}
+		report.addCheck(providerPreflightCheck{
+			Name:    "provider_executable_policy",
+			Status:  preflightStatusFail,
+			Message: err.Error(),
+		})
+		_ = writePreflightReport(opts.LogsRoot, report)
 		return nil, err
 	}
 
