@@ -106,6 +106,19 @@ func RunWithConfig(ctx context.Context, dotSource []byte, cfg *RunConfigFile, ov
 			return nil, fmt.Errorf("repo has uncommitted changes (require_clean=true)")
 		}
 	}
+	// Verify the repo has at least one commit (HeadSHA fails on empty repos).
+	// eng.run() needs this later for branch creation; catching it here avoids
+	// wasting minutes on provider probes and CXDB startup first.
+	if _, err := gitutil.HeadSHA(opts.RepoPath); err != nil {
+		return nil, fmt.Errorf("repo has no commits or HEAD is unresolvable: %w", err)
+	}
+	// Ensure the logs directory is writable before expensive preflight work.
+	// Several preflight steps write into LogsRoot, but an outright unwritable
+	// path would surface as a confusing mid-preflight error instead of a clear
+	// early one.
+	if err := os.MkdirAll(opts.LogsRoot, 0o755); err != nil {
+		return nil, fmt.Errorf("cannot create logs directory %s: %w", opts.LogsRoot, err)
+	}
 
 	if err := validateRunCLIProfilePolicy(cfg, opts, runUsesCLIProviders); err != nil {
 		report := &providerPreflightReport{
