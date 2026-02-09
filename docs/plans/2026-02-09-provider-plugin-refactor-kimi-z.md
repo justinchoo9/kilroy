@@ -449,7 +449,6 @@ func TestResolveProviderRuntimes_MergesBuiltinAndConfigOverrides(t *testing.T) {
 	cfg := &RunConfigFile{}
 	cfg.LLM.Providers = map[string]ProviderConfig{
 		"kimi": {Backend: BackendAPI, API: ProviderAPIConfig{Protocol: "openai_chat_completions", APIKeyEnv: "KIMI_API_KEY", Headers: map[string]string{"X-Trace": "1"}}},
-		"openai": {Backend: BackendAPI},
 	}
 	rt, err := resolveProviderRuntimes(cfg)
 	if err != nil {
@@ -458,8 +457,11 @@ func TestResolveProviderRuntimes_MergesBuiltinAndConfigOverrides(t *testing.T) {
 	if rt["kimi"].API.Protocol != "openai_chat_completions" {
 		t.Fatalf("kimi protocol mismatch")
 	}
+	if _, ok := rt["openai"]; !ok {
+		t.Fatalf("expected failover target runtime for openai")
+	}
 	if rt["openai"].API.DefaultPath != "/v1/responses" {
-		t.Fatalf("expected openai default path")
+		t.Fatalf("expected synthesized openai default path")
 	}
 	if got := rt["kimi"].APIHeaders(); got["X-Trace"] != "1" {
 		t.Fatalf("expected runtime headers copy, got %v", got)
@@ -531,7 +533,40 @@ func resolveProviderRuntimes(cfg *RunConfigFile) (map[string]ProviderRuntime, er
 		}
 		out[key] = rt
 	}
+
+	// Ensure failover targets are resolvable even when not explicitly configured.
+	// This preserves current fallback behavior for builtins like openai/anthropic/google.
+	for _, rt := range out {
+		for _, target := range rt.Failover {
+			if _, ok := out[target]; ok {
+				continue
+			}
+			b, ok := providerspec.Builtin(target)
+			if !ok {
+				continue
+			}
+			synth := ProviderRuntime{
+				Key:        target,
+				Backend:    defaultBackendForSpec(b),
+				Executable: "",
+				CLI:        cloneCLISpec(b.CLI),
+				Failover:   providerspec.CanonicalizeProviderList(b.Failover),
+			}
+			if b.API != nil {
+				synth.API = *b.API
+				synth.ProfileFamily = b.API.ProfileFamily
+			}
+			out[target] = synth
+		}
+	}
 	return out, nil
+}
+
+func defaultBackendForSpec(spec providerspec.Spec) BackendKind {
+	if spec.API != nil {
+		return BackendAPI
+	}
+	return BackendCLI
 }
 
 func cloneCLISpec(in *providerspec.CLISpec) *providerspec.CLISpec {
@@ -693,6 +728,35 @@ Apply the same constructor/name pattern in:
 - `internal/llm/providers/anthropic/adapter.go` using default base URL `https://api.anthropic.com`
 - `internal/llm/providers/google/adapter.go` using default base URL `https://generativelanguage.googleapis.com`
 
+```go
+// anthropic/adapter.go (same structure for google with provider="google")
+func NewFromEnv() (*Adapter, error) {
+	key := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
+	if key == "" {
+		return nil, fmt.Errorf("ANTHROPIC_API_KEY is required")
+	}
+	return NewWithProvider("anthropic", key, os.Getenv("ANTHROPIC_BASE_URL")), nil
+}
+```
+
+```go
+// google/adapter.go
+func NewFromEnv() (*Adapter, error) {
+	key := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	if key == "" {
+		key = strings.TrimSpace(os.Getenv("GOOGLE_API_KEY"))
+	}
+	if key == "" {
+		return nil, fmt.Errorf("GEMINI_API_KEY is required")
+	}
+	return NewWithProvider("google", key, os.Getenv("GEMINI_BASE_URL")), nil
+}
+```
+
+Backward-compatibility rule:
+- Keep each provider `init()` env registration factory as-is.
+- `init()` continues to call `NewFromEnv()`, and `NewFromEnv()` must always set the canonical provider key (`openai`/`anthropic`/`google`) so adapter registration names remain stable.
+
 Sequencing note:
 - Task 4 intentionally wires OpenAI/Anthropic/Google first.
 - Task 5 adds `ProtocolOpenAIChatCompletions` support and updates `internal/llmclient/from_runtime.go` in the same commit as `openaicompat`.
@@ -798,14 +862,16 @@ func NewAdapter(cfg Config) *Adapter {
 	if cfg.Provider == "" {
 		cfg.Provider = cfg.OptionsKey
 	}
-	// Intentionally no client timeout; request contexts control cancellation/deadlines.
-	return &Adapter{cfg: cfg, client: &http.Client{Timeout: 0}}
+	return &Adapter{cfg: cfg, client: &http.Client{Timeout: 90 * time.Second}}
 }
 
 func (a *Adapter) Name() string { return a.cfg.Provider }
 
 func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	body := toChatCompletionsBody(req, a.cfg.OptionsKey)
+	body, err := toChatCompletionsBody(req, a.cfg.OptionsKey)
+	if err != nil {
+		return llm.Response{}, err
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.BaseURL+a.cfg.Path, bytes.NewReader(body))
 	if err != nil {
 		return llm.Response{}, llm.WrapContextError(a.cfg.Provider, err)
@@ -827,7 +893,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	sctx, cancel := context.WithCancel(ctx)
 	s := llm.NewChanStream(cancel)
 	go func() {
-		defer s.Close()
+		defer s.CloseSend()
 		s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 		resp, err := a.Complete(sctx, req)
 		if err != nil {
@@ -850,7 +916,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	return s, nil
 }
 
-func toChatCompletionsBody(req llm.Request, optionsKey string) []byte {
+func toChatCompletionsBody(req llm.Request, optionsKey string) ([]byte, error) {
 	body := map[string]any{
 		"model":    req.Model,
 		"messages": toChatCompletionsMessages(req.Messages),
@@ -868,28 +934,63 @@ func toChatCompletionsBody(req llm.Request, optionsKey string) []byte {
 			}
 		}
 	}
-	b, _ := json.Marshal(body)
-	return b
+	return json.Marshal(body)
 }
 
 func parseChatCompletionsResponse(provider, model string, resp *http.Response) (llm.Response, error) {
-	rawBytes, _ := io.ReadAll(resp.Body)
+	rawBytes, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return llm.Response{}, llm.WrapContextError(provider, err)
+	}
 	var raw map[string]any
-	_ = json.Unmarshal(rawBytes, &raw)
+	if err := json.Unmarshal(rawBytes, &raw); err != nil {
+		return llm.Response{}, llm.WrapContextError(provider, err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		return llm.Response{}, llm.ErrorFromHTTPStatus(provider, resp.StatusCode, "chat.completions failed", raw, ra)
 	}
-	return fromChatCompletions(provider, model, raw), nil
+	return fromChatCompletions(provider, model, raw)
 }
 
 func toChatCompletionsMessages(msgs []llm.Message) []map[string]any {
 	out := make([]map[string]any, 0, len(msgs))
 	for _, m := range msgs {
-		out = append(out, map[string]any{
-			"role":    string(m.Role),
-			"content": m.Text(),
-		})
+		entry := map[string]any{"role": string(m.Role)}
+		textParts := []string{}
+		toolCalls := []map[string]any{}
+		for _, p := range m.Content {
+			switch p.Kind {
+			case llm.ContentText:
+				if strings.TrimSpace(p.Text) != "" {
+					textParts = append(textParts, p.Text)
+				}
+			case llm.ContentToolCall:
+				if p.ToolCall != nil {
+					toolCalls = append(toolCalls, map[string]any{
+						"id":   p.ToolCall.ID,
+						"type": "function",
+						"function": map[string]any{
+							"name":      p.ToolCall.Name,
+							"arguments": string(p.ToolCall.Arguments),
+						},
+					})
+				}
+			case llm.ContentToolResult:
+				if p.ToolResult != nil {
+					entry["role"] = "tool"
+					entry["tool_call_id"] = p.ToolResult.ToolCallID
+					entry["content"] = renderAnyAsText(p.ToolResult.Content)
+				}
+			}
+		}
+		if _, ok := entry["content"]; !ok {
+			entry["content"] = strings.Join(textParts, "\n")
+		}
+		if len(toolCalls) > 0 {
+			entry["tool_calls"] = toolCalls
+		}
+		out = append(out, entry)
 	}
 	return out
 }
@@ -925,10 +1026,105 @@ func toChatCompletionsToolChoice(tc llm.ToolChoice) any {
 	}
 }
 
-func fromChatCompletions(provider, model string, raw map[string]any) llm.Response {
-	// Parse assistant content/tool_calls/usage from first choice; preserve raw payload.
-	// (Implementation detail: mirror OpenAI adapter response mapping helpers.)
-	return llm.Response{Provider: provider, Model: model, Raw: raw}
+func fromChatCompletions(provider, model string, raw map[string]any) (llm.Response, error) {
+	choicesAny, ok := raw["choices"].([]any)
+	if !ok || len(choicesAny) == 0 {
+		return llm.Response{}, fmt.Errorf("chat.completions response missing choices")
+	}
+	choice, ok := choicesAny[0].(map[string]any)
+	if !ok {
+		return llm.Response{}, fmt.Errorf("chat.completions first choice malformed")
+	}
+	msgMap, _ := choice["message"].(map[string]any)
+	msg := llm.Assistant(asString(msgMap["content"]))
+	if callsAny, ok := msgMap["tool_calls"].([]any); ok {
+		for _, c := range callsAny {
+			cm, _ := c.(map[string]any)
+			fn, _ := cm["function"].(map[string]any)
+			msg.Content = append(msg.Content, llm.ContentPart{
+				Kind: llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{
+					ID:        asString(cm["id"]),
+					Type:      asString(cm["type"]),
+					Name:      asString(fn["name"]),
+					Arguments: json.RawMessage(renderAnyAsText(fn["arguments"])),
+				},
+			})
+		}
+	}
+	usageMap, _ := raw["usage"].(map[string]any)
+	return llm.Response{
+		ID:       asString(raw["id"]),
+		Model:    firstNonEmpty(model, asString(raw["model"])),
+		Provider: provider,
+		Message:  msg,
+		Finish:   llm.FinishReason{Reason: normalizeFinishReason(asString(choice["finish_reason"])), Raw: asString(choice["finish_reason"])},
+		Usage: llm.Usage{
+			InputTokens:  intFromAny(usageMap["prompt_tokens"]),
+			OutputTokens: intFromAny(usageMap["completion_tokens"]),
+			TotalTokens:  intFromAny(usageMap["total_tokens"]),
+		},
+		Raw: raw,
+	}, nil
+}
+
+func renderAnyAsText(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(b)
+}
+
+func asString(v any) string {
+	switch x := v.(type) {
+	case string:
+		return strings.TrimSpace(x)
+	case json.Number:
+		return x.String()
+	default:
+		return ""
+	}
+}
+
+func intFromAny(v any) int {
+	switch x := v.(type) {
+	case int:
+		return x
+	case int64:
+		return int(x)
+	case float64:
+		return int(x)
+	case json.Number:
+		i, _ := x.Int64()
+		return int(i)
+	case string:
+		n, _ := strconv.Atoi(strings.TrimSpace(x))
+		return n
+	default:
+		return 0
+	}
+}
+
+func firstNonEmpty(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return strings.TrimSpace(a)
+	}
+	return strings.TrimSpace(b)
+}
+
+func normalizeFinishReason(in string) string {
+	switch strings.ToLower(strings.TrimSpace(in)) {
+	case "tool_calls":
+		return "tool_call"
+	case "length":
+		return "max_tokens"
+	default:
+		return strings.ToLower(strings.TrimSpace(in))
+	}
 }
 ```
 
@@ -995,8 +1191,8 @@ func TestPickFailoverModelFromRuntime_NeverReturnsEmptyForConfiguredProvider(t *
 		"zai": {Key: "zai"},
 	}
 	got := pickFailoverModelFromRuntime("zai", rt, nil, "glm-4.7")
-	if got == "" {
-		t.Fatalf("expected non-empty failover model")
+	if got != "glm-4.7" {
+		t.Fatalf("expected fallback model, got %q", got)
 	}
 }
 ```
