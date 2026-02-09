@@ -72,7 +72,7 @@ type RunConfigFile struct {
 	} `json:"modeldb" yaml:"modeldb"`
 
 	Git struct {
-		RequireClean    bool   `json:"require_clean" yaml:"require_clean"`
+		RequireClean    *bool  `json:"require_clean,omitempty" yaml:"require_clean,omitempty"`
 		RunBranchPrefix string `json:"run_branch_prefix" yaml:"run_branch_prefix"`
 		CommitPerNode   bool   `json:"commit_per_node" yaml:"commit_per_node"`
 	} `json:"git" yaml:"git"`
@@ -116,9 +116,10 @@ func applyConfigDefaults(cfg *RunConfigFile) {
 	if !cfg.Git.CommitPerNode {
 		cfg.Git.CommitPerNode = true
 	}
-	// metaspec default.
-	if !cfg.Git.RequireClean {
-		cfg.Git.RequireClean = true
+	// metaspec default: require_clean defaults to true when not specified.
+	if cfg.Git.RequireClean == nil {
+		t := true
+		cfg.Git.RequireClean = &t
 	}
 	if cfg.LLM.Providers == nil {
 		cfg.LLM.Providers = map[string]ProviderConfig{}
@@ -232,6 +233,15 @@ func trimNonEmpty(parts []string) []string {
 		}
 	}
 	return out
+}
+
+// resolveRequireClean returns the effective require_clean value from the config,
+// defaulting to true when the config is nil or the field is unset.
+func resolveRequireClean(cfg *RunConfigFile) bool {
+	if cfg == nil || cfg.Git.RequireClean == nil {
+		return true
+	}
+	return *cfg.Git.RequireClean
 }
 
 func firstNonEmpty(values ...string) string {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/strongdm/kilroy/internal/attractor/gitutil"
 	"github.com/strongdm/kilroy/internal/attractor/model"
 	"github.com/strongdm/kilroy/internal/attractor/modeldb"
 	"github.com/strongdm/kilroy/internal/cxdb"
@@ -82,6 +83,30 @@ func RunWithConfig(ctx context.Context, dotSource []byte, cfg *RunConfigFile, ov
 	if err := opts.applyDefaults(); err != nil {
 		return nil, err
 	}
+	// Wire require_clean from config (applyDefaults sets the safe default;
+	// the config can explicitly relax it to false).
+	if cfg.Git.RequireClean != nil {
+		opts.RequireClean = *cfg.Git.RequireClean
+	}
+
+	// Repo validation: cheap local checks that must pass before any expensive
+	// preflight work (provider probes, model catalog fetch, CXDB startup).
+	if opts.RepoPath == "" {
+		return nil, fmt.Errorf("repo.path is required")
+	}
+	if !gitutil.IsRepo(opts.RepoPath) {
+		return nil, fmt.Errorf("not a git repo: %s", opts.RepoPath)
+	}
+	if opts.RequireClean {
+		clean, err := gitutil.IsClean(opts.RepoPath)
+		if err != nil {
+			return nil, err
+		}
+		if !clean {
+			return nil, fmt.Errorf("repo has uncommitted changes (require_clean=true)")
+		}
+	}
+
 	if err := validateRunCLIProfilePolicy(cfg, opts, runUsesCLIProviders); err != nil {
 		report := &providerPreflightReport{
 			GeneratedAt:         time.Now().UTC().Format(time.RFC3339Nano),

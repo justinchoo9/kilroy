@@ -197,7 +197,7 @@ func resumeFromLogsRoot(ctx context.Context, logsRoot string, ov ResumeOverrides
 		LogsRoot:        logsRoot,
 		WorktreeDir:     filepath.Join(logsRoot, "worktree"),
 		RunBranchPrefix: prefix,
-		RequireClean:    true,
+		RequireClean:    resolveRequireClean(cfg),
 		ForceModels:     normalizeForceModels(copyStringStringMap(m.ForceModels)),
 	}
 	if err := opts.applyDefaults(); err != nil {
