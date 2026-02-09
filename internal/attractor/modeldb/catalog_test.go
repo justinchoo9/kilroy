@@ -14,3 +14,22 @@ func TestCatalogHasProviderModel_AcceptsCanonicalAndProviderRelativeIDs(t *testi
 		t.Fatalf("expected canonical openai model id to resolve")
 	}
 }
+
+func TestCatalogHasProviderModel_AcceptsOpenRouterProviderPrefixes(t *testing.T) {
+	c := &Catalog{Models: map[string]ModelEntry{
+		"moonshotai/kimi-k2.5": {},
+		"z-ai/glm-4.7":         {},
+	}}
+	if !CatalogHasProviderModel(c, "kimi", "kimi-k2.5") {
+		t.Fatalf("expected kimi provider-relative model to match moonshotai prefix")
+	}
+	if !CatalogHasProviderModel(c, "kimi", "moonshotai/kimi-k2.5") {
+		t.Fatalf("expected kimi canonical/openrouter id to match")
+	}
+	if !CatalogHasProviderModel(c, "zai", "glm-4.7") {
+		t.Fatalf("expected zai provider-relative model to match z-ai prefix")
+	}
+	if !CatalogHasProviderModel(c, "zai", "z-ai/glm-4.7") {
+		t.Fatalf("expected zai canonical/openrouter id to match")
+	}
+}
