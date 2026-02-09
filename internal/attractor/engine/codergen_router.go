@@ -718,6 +718,9 @@ func (r *CodergenRouter) runCLI(ctx context.Context, execCtx *Execution, node *m
 	} else {
 		inv["env_mode"] = "inherit"
 		inv["env_allowlist"] = []string{"*"}
+		if scrubbed := conflictingProviderEnvKeys(providerKey); len(scrubbed) > 0 {
+			inv["env_scrubbed_keys"] = scrubbed
+		}
 	}
 	if structuredOutPath != "" {
 		inv["structured_output_path"] = structuredOutPath
@@ -737,6 +740,8 @@ func (r *CodergenRouter) runCLI(ctx context.Context, execCtx *Execution, node *m
 		if codexSemantics {
 			cmd.Env = isolatedEnv
 			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		} else {
+			cmd.Env = scrubConflictingProviderEnvKeys(os.Environ(), providerKey)
 		}
 		if promptMode == "stdin" {
 			cmd.Stdin = strings.NewReader(prompt)
@@ -1060,6 +1065,44 @@ func mergeEnvWithOverrides(base []string, overrides map[string]string) []string 
 	sort.Strings(remaining)
 	for _, k := range remaining {
 		out = append(out, k+"="+overrides[k])
+	}
+	return out
+}
+
+// conflictingProviderEnvKeys returns env var names that must be stripped when
+// launching a given provider's CLI. The Claude CLI uses OAuth/session-based auth
+// by default; an inherited ANTHROPIC_API_KEY causes it to attempt (and fail)
+// external API key authentication instead.
+func conflictingProviderEnvKeys(providerKey string) []string {
+	switch normalizeProviderKey(providerKey) {
+	case "anthropic":
+		return []string{"ANTHROPIC_API_KEY"}
+	default:
+		return nil
+	}
+}
+
+// scrubConflictingProviderEnvKeys returns a copy of the environment with
+// provider-conflicting keys removed.
+func scrubConflictingProviderEnvKeys(base []string, providerKey string) []string {
+	drop := conflictingProviderEnvKeys(providerKey)
+	if len(drop) == 0 {
+		return base
+	}
+	dropSet := map[string]bool{}
+	for _, k := range drop {
+		dropSet[k] = true
+	}
+	out := make([]string, 0, len(base))
+	for _, entry := range base {
+		key := entry
+		if idx := strings.IndexByte(entry, '='); idx >= 0 {
+			key = entry[:idx]
+		}
+		if dropSet[key] {
+			continue
+		}
+		out = append(out, entry)
 	}
 	return out
 }
