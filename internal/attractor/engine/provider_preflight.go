@@ -69,6 +69,13 @@ type preflightAPIPromptProbeTarget struct {
 	Request   llm.Request
 }
 
+type preflightAPIPromptProbeResult struct {
+	Text       string
+	Transport  string
+	MaxTokens  int
+	PolicyHint string
+}
+
 func runProviderCLIPreflight(ctx context.Context, g *model.Graph, runtimes map[string]ProviderRuntime, cfg *RunConfigFile, opts RunOptions) (*providerPreflightReport, error) {
 	report := &providerPreflightReport{
 		GeneratedAt:         time.Now().UTC().Format(time.RFC3339Nano),
@@ -222,43 +229,64 @@ func runProviderAPIPreflight(ctx context.Context, g *model.Graph, runtimes map[s
 			continue
 		}
 		for _, target := range targets {
-			responseText, probeErr := runProviderAPIPromptProbeTargetWithPolicy(ctx, client, target, policy)
+			probe, probeErr := runProviderAPIPromptProbeTargetWithPolicy(ctx, client, target, policy)
+			effectiveTransport := strings.TrimSpace(probe.Transport)
+			if effectiveTransport == "" {
+				effectiveTransport = strings.TrimSpace(target.Transport)
+			}
+			if effectiveTransport == "" {
+				effectiveTransport = preflightAPIPromptProbeTransportComplete
+			}
 			if probeErr != nil {
 				status := preflightStatusFail
-				if target.Transport == preflightAPIPromptProbeTransportStream && !explicitTransports {
+				if effectiveTransport == preflightAPIPromptProbeTransportStream && !explicitTransports {
 					// Default transport coverage should not block startup when a
 					// provider lacks a reliable stream preflight path.
 					status = preflightStatusWarn
+				}
+				details := map[string]any{
+					"backend":   "api",
+					"model":     target.Model,
+					"mode":      target.Mode,
+					"transport": effectiveTransport,
+				}
+				if probe.MaxTokens > 0 {
+					details["max_tokens"] = probe.MaxTokens
+				}
+				if strings.TrimSpace(probe.PolicyHint) != "" {
+					details["policy_reason"] = probe.PolicyHint
 				}
 				report.addCheck(providerPreflightCheck{
 					Name:     "provider_prompt_probe",
 					Provider: provider,
 					Status:   status,
-					Message:  fmt.Sprintf("prompt probe failed for model %s (mode=%s transport=%s): %v", target.Model, target.Mode, target.Transport, probeErr),
-					Details: map[string]any{
-						"backend":   "api",
-						"model":     target.Model,
-						"mode":      target.Mode,
-						"transport": target.Transport,
-					},
+					Message:  fmt.Sprintf("prompt probe failed for model %s (mode=%s transport=%s): %v", target.Model, target.Mode, effectiveTransport, probeErr),
+					Details:  details,
 				})
 				if status == preflightStatusFail {
-					return fmt.Errorf("preflight: provider %s api prompt probe failed for model %s (mode=%s transport=%s): %w", provider, target.Model, target.Mode, target.Transport, probeErr)
+					return fmt.Errorf("preflight: provider %s api prompt probe failed for model %s (mode=%s transport=%s): %w", provider, target.Model, target.Mode, effectiveTransport, probeErr)
 				}
 				continue
+			}
+			details := map[string]any{
+				"backend":          "api",
+				"model":            target.Model,
+				"mode":             target.Mode,
+				"transport":        effectiveTransport,
+				"response_preview": truncate(strings.TrimSpace(probe.Text), 64),
+			}
+			if probe.MaxTokens > 0 {
+				details["max_tokens"] = probe.MaxTokens
+			}
+			if strings.TrimSpace(probe.PolicyHint) != "" {
+				details["policy_reason"] = probe.PolicyHint
 			}
 			report.addCheck(providerPreflightCheck{
 				Name:     "provider_prompt_probe",
 				Provider: provider,
 				Status:   preflightStatusPass,
-				Message:  fmt.Sprintf("prompt probe succeeded for model %s (mode=%s transport=%s)", target.Model, target.Mode, target.Transport),
-				Details: map[string]any{
-					"backend":          "api",
-					"model":            target.Model,
-					"mode":             target.Mode,
-					"transport":        target.Transport,
-					"response_preview": truncate(strings.TrimSpace(responseText), 64),
-				},
+				Message:  fmt.Sprintf("prompt probe succeeded for model %s (mode=%s transport=%s)", target.Model, target.Mode, effectiveTransport),
+				Details:  details,
 			})
 		}
 	}
@@ -266,6 +294,14 @@ func runProviderAPIPreflight(ctx context.Context, g *model.Graph, runtimes map[s
 }
 
 func runProviderAPIPromptProbe(ctx context.Context, client *llm.Client, provider string, modelID string) (string, error) {
+	probe, err := runProviderAPIPromptProbeDetailed(ctx, client, provider, modelID)
+	if err != nil {
+		return "", err
+	}
+	return probe.Text, nil
+}
+
+func runProviderAPIPromptProbeDetailed(ctx context.Context, client *llm.Client, provider string, modelID string) (preflightAPIPromptProbeResult, error) {
 	maxTokens := 16
 	target := preflightAPIPromptProbeTarget{
 		Provider:  provider,
@@ -281,12 +317,17 @@ func runProviderAPIPromptProbe(ctx context.Context, client *llm.Client, provider
 			MaxTokens: &maxTokens,
 		},
 	}
-	return runProviderAPIPromptProbeTarget(ctx, client, target)
+	policy := preflightAPIPromptProbePolicyFromEnv()
+	return runProviderAPIPromptProbeTargetWithPolicy(ctx, client, target, policy)
 }
 
 func runProviderAPIPromptProbeTarget(ctx context.Context, client *llm.Client, target preflightAPIPromptProbeTarget) (string, error) {
 	policy := preflightAPIPromptProbePolicyFromEnv()
-	return runProviderAPIPromptProbeTargetWithPolicy(ctx, client, target, policy)
+	probe, err := runProviderAPIPromptProbeTargetWithPolicy(ctx, client, target, policy)
+	if err != nil {
+		return "", err
+	}
+	return probe.Text, nil
 }
 
 type preflightAPIPromptProbePolicy struct {
@@ -378,15 +419,21 @@ func preflightAPIPromptProbePolicyFromConfig(cfg *RunConfigFile) preflightAPIPro
 	return p
 }
 
-func runProviderAPIPromptProbeTargetWithPolicy(ctx context.Context, client *llm.Client, target preflightAPIPromptProbeTarget, policy preflightAPIPromptProbePolicy) (string, error) {
+func runProviderAPIPromptProbeTargetWithPolicy(ctx context.Context, client *llm.Client, target preflightAPIPromptProbeTarget, policy preflightAPIPromptProbePolicy) (preflightAPIPromptProbeResult, error) {
+	result := preflightAPIPromptProbeResult{
+		Transport: strings.TrimSpace(target.Transport),
+	}
+	if result.Transport == "" {
+		result.Transport = preflightAPIPromptProbeTransportComplete
+	}
 	if client == nil {
-		return "", fmt.Errorf("api client is nil")
+		return result, fmt.Errorf("api client is nil")
 	}
 	if strings.TrimSpace(target.Provider) == "" {
-		return "", fmt.Errorf("probe target provider is empty")
+		return result, fmt.Errorf("probe target provider is empty")
 	}
 	if strings.TrimSpace(target.Model) == "" {
-		return "", fmt.Errorf("probe target model is empty")
+		return result, fmt.Errorf("probe target model is empty")
 	}
 	if policy.Timeout <= 0 {
 		policy.Timeout = defaultPreflightAPIPromptProbeTimeout
@@ -405,43 +452,57 @@ func runProviderAPIPromptProbeTargetWithPolicy(ctx context.Context, client *llm.
 	}
 
 	maxTokens := 16
+	if target.Request.MaxTokens == nil {
+		target.Request.MaxTokens = &maxTokens
+	}
+	if strings.TrimSpace(target.Request.Provider) == "" {
+		target.Request.Provider = target.Provider
+	}
+	if strings.TrimSpace(target.Request.Model) == "" {
+		target.Request.Model = target.Model
+	}
+	execPolicy := llm.ExecutionPolicy(target.Provider)
+	target.Request = llm.ApplyExecutionPolicy(target.Request, execPolicy)
+	if execPolicy.ForceStream {
+		result.Transport = preflightAPIPromptProbeTransportStream
+	}
+	target.Transport = result.Transport
+	if target.Request.MaxTokens != nil {
+		result.MaxTokens = *target.Request.MaxTokens
+	}
+	if strings.TrimSpace(execPolicy.Reason) != "" {
+		result.PolicyHint = execPolicy.Reason
+	}
+
 	var lastErr error
 	attempts := policy.Retries + 1
 	for attempt := 1; attempt <= attempts; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return "", err
-		}
-		if target.Request.MaxTokens == nil {
-			target.Request.MaxTokens = &maxTokens
-		}
-		if strings.TrimSpace(target.Request.Provider) == "" {
-			target.Request.Provider = target.Provider
-		}
-		if strings.TrimSpace(target.Request.Model) == "" {
-			target.Request.Model = target.Model
+			return result, err
 		}
 		probeCtx, cancel := context.WithTimeout(ctx, policy.Timeout)
 		responseText, err := runProviderAPIPromptProbeAttempt(probeCtx, client, target)
 		cancel()
 		if err == nil {
-			return strings.TrimSpace(responseText), nil
+			result.Text = strings.TrimSpace(responseText)
+			return result, nil
 		}
 		lastErr = err
 		if attempt == attempts || !shouldRetryPreflightAPIPromptProbe(err) {
-			return "", err
+			return result, err
 		}
 		delay := preflightAPIPromptProbeBackoff(policy, attempt-1)
 		if sleepErr := waitForPreflightProbeBackoff(ctx, delay); sleepErr != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return "", ctxErr
+				return result, ctxErr
 			}
-			return "", sleepErr
+			return result, sleepErr
 		}
 	}
 	if lastErr != nil {
-		return "", lastErr
+		return result, lastErr
 	}
-	return "", fmt.Errorf("api prompt probe failed")
+	return result, fmt.Errorf("api prompt probe failed")
 }
 
 func runProviderAPIPromptProbeAttempt(ctx context.Context, client *llm.Client, target preflightAPIPromptProbeTarget) (string, error) {

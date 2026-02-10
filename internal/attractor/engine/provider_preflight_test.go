@@ -998,15 +998,16 @@ func TestRunWithConfig_PreflightPromptProbe_AllProvidersWhenGraphUsesAll(t *test
 			return
 		}
 		if r.URL.Path == "/coding/v1/messages" {
-			_, _ = w.Write([]byte(`{
-  "id":"msg_preflight",
-  "type":"message",
-  "role":"assistant",
-  "content":[{"type":"text","text":"OK"}],
-  "model":"kimi-for-coding",
-  "stop_reason":"end_turn",
-  "usage":{"input_tokens":1,"output_tokens":1}
-}`))
+			var payload map[string]any
+			_ = json.Unmarshal(b, &payload)
+			stream, _ := payload["stream"].(bool)
+			if !stream || asInt(payload["max_tokens"]) < 16000 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":{"type":"invalid_request_error","message":"expected stream=true and max_tokens>=16000"}}`))
+				return
+			}
+			writeAnthropicStreamOK(w, "OK")
 			return
 		}
 		_, _ = w.Write([]byte(`{
@@ -1110,6 +1111,7 @@ digraph G {
 		"kimi":      false,
 		"zai":       false,
 	}
+	sawKimiPolicyDetails := false
 	for _, check := range report.Checks {
 		if check.Name != "provider_prompt_probe" || check.Status != "pass" {
 			continue
@@ -1117,11 +1119,26 @@ digraph G {
 		if _, ok := wantProviders[check.Provider]; ok {
 			wantProviders[check.Provider] = true
 		}
+		if check.Provider == "kimi" {
+			if got, _ := check.Details["transport"].(string); got != "stream" {
+				t.Fatalf("provider_prompt_probe.details.transport=%q want %q", got, "stream")
+			}
+			if got := asInt(check.Details["max_tokens"]); got < 16000 {
+				t.Fatalf("provider_prompt_probe.details.max_tokens=%d want >=16000", got)
+			}
+			if got, _ := check.Details["policy_reason"].(string); strings.TrimSpace(got) == "" {
+				t.Fatalf("provider_prompt_probe.details.policy_reason should be non-empty")
+			}
+			sawKimiPolicyDetails = true
+		}
 	}
 	for provider, seen := range wantProviders {
 		if !seen {
 			t.Fatalf("missing provider_prompt_probe pass check for %s", provider)
 		}
+	}
+	if !sawKimiPolicyDetails {
+		t.Fatalf("missing provider_prompt_probe policy details for kimi")
 	}
 }
 
