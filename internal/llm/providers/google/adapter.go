@@ -421,7 +421,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 						}
 					}
 					if fr, _ := c0["finishReason"].(string); fr != "" {
-						finish = llm.FinishReason{Reason: fr, Raw: fr}
+						finish = llm.NormalizeFinishReason(a.Name(), fr)
 						if textStarted {
 							s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
 							textStarted = false
@@ -803,7 +803,7 @@ func fromGeminiResponse(provider string, raw map[string]any, requestedModel stri
 				}
 			}
 			if fr, _ := c0["finishReason"].(string); fr != "" {
-				r.Finish = llm.FinishReason{Reason: fr}
+				r.Finish = llm.NormalizeFinishReason(provider, fr)
 			}
 		}
 	}

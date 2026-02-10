@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -382,6 +383,130 @@ func TestAdapter_Complete_HTTPErrorMapping_ServerErrorWithRetryAfter(t *testing.
 	}
 	if se.RetryAfter() == nil || *se.RetryAfter() != 1*time.Second {
 		t.Fatalf("retry_after: %v", se.RetryAfter())
+	}
+}
+
+func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
+	cases := []struct {
+		name       string
+		httpStatus int
+		grpcStatus string
+		message    string
+		checkErr   func(t *testing.T, err error)
+	}{
+		{
+			name:       "RESOURCE_EXHAUSTED via 429 maps to RateLimitError",
+			httpStatus: 429,
+			grpcStatus: "RESOURCE_EXHAUSTED",
+			message:    "quota exceeded",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.RateLimitError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected RateLimitError, got %T (%v)", err, err)
+				}
+			},
+		},
+		{
+			name:       "NOT_FOUND via 404 maps to NotFoundError",
+			httpStatus: 404,
+			grpcStatus: "NOT_FOUND",
+			message:    "model not found",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.NotFoundError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected NotFoundError, got %T (%v)", err, err)
+				}
+			},
+		},
+		{
+			name:       "INVALID_ARGUMENT via 400 maps to InvalidRequestError",
+			httpStatus: 400,
+			grpcStatus: "INVALID_ARGUMENT",
+			message:    "invalid argument",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.InvalidRequestError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected InvalidRequestError, got %T (%v)", err, err)
+				}
+			},
+		},
+		{
+			name:       "PERMISSION_DENIED via 403 maps to AccessDeniedError",
+			httpStatus: 403,
+			grpcStatus: "PERMISSION_DENIED",
+			message:    "permission denied",
+			checkErr: func(t *testing.T, err error) {
+				var target *llm.AccessDeniedError
+				if !errors.As(err, &target) {
+					t.Fatalf("expected AccessDeniedError, got %T (%v)", err, err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.httpStatus)
+				_, _ = w.Write([]byte(fmt.Sprintf(
+					`{"error":{"code":%d,"message":"%s","status":"%s"}}`,
+					tc.httpStatus, tc.message, tc.grpcStatus,
+				)))
+			}))
+			t.Cleanup(srv.Close)
+
+			a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			_, err := a.Complete(ctx, llm.Request{Model: "gemini-test", Messages: []llm.Message{llm.User("hi")}})
+			if err == nil {
+				t.Fatalf("expected error")
+			}
+			tc.checkErr(t, err)
+		})
+	}
+}
+
+func TestAdapter_Complete_FinishReason_Normalized(t *testing.T) {
+	cases := []struct {
+		name         string
+		finishReason string
+		wantReason   string
+		wantRaw      string
+	}{
+		{"STOP", "STOP", "stop", "STOP"},
+		{"MAX_TOKENS", "MAX_TOKENS", "length", "MAX_TOKENS"},
+		{"SAFETY", "SAFETY", "content_filter", "SAFETY"},
+		{"RECITATION", "RECITATION", "content_filter", "RECITATION"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{
+  "candidates": [{"content": {"parts": [{"text":"ok"}]}, "finishReason":%q}],
+  "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
+}`, tc.finishReason)
+			}))
+			t.Cleanup(srv.Close)
+
+			a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			resp, err := a.Complete(ctx, llm.Request{Model: "gemini-test", Messages: []llm.Message{llm.User("hi")}})
+			if err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+			if resp.Finish.Reason != tc.wantReason {
+				t.Fatalf("Finish.Reason = %q, want %q", resp.Finish.Reason, tc.wantReason)
+			}
+			if resp.Finish.Raw != tc.wantRaw {
+				t.Fatalf("Finish.Raw = %q, want %q", resp.Finish.Raw, tc.wantRaw)
+			}
+		})
 	}
 }
 
