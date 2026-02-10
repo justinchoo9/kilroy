@@ -2,9 +2,11 @@ package gitutil
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 type CommandError struct {
@@ -132,11 +134,25 @@ func CommitAllowEmpty(worktreeDir, message string) (string, error) {
 	return HeadSHA(worktreeDir)
 }
 
-// PushBranch pushes a branch to the specified remote.
+// PushBranch pushes a branch to the specified remote with a 2-minute timeout.
+// GIT_TERMINAL_PROMPT=0 prevents interactive credential prompts from blocking.
 // It is a best-effort operation; failures are returned but should not abort a run.
 func PushBranch(repoDir, remote, branch string) error {
-	_, _, err := runGit(repoDir, "push", remote, branch)
-	return err
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	base := []string{
+		"-C", repoDir,
+		"-c", "maintenance.auto=0",
+		"-c", "gc.auto=0",
+	}
+	cmd := exec.CommandContext(ctx, "git", append(base, "push", remote, branch)...)
+	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return &CommandError{Args: []string{"push", remote, branch}, Stderr: stderr.String(), Err: err}
+	}
+	return nil
 }
 
 func MergeFastForwardOnly(worktreeDir, otherRef string) error {

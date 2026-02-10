@@ -197,6 +197,7 @@ git:
   require_clean: true
   run_branch_prefix: attractor/run
   commit_per_node: true
+  push_remote: origin          # optional; push run branch to this remote on loop_restart and terminal outcome
 ```
 
 ### 4.4 Exit Codes
