@@ -113,6 +113,125 @@ digraph G {
 	}
 }
 
+func TestRunWithConfig_CLIBackend_StatusContractEnvInjected(t *testing.T) {
+	cleanupStrayEngineArtifacts(t)
+	t.Cleanup(func() { cleanupStrayEngineArtifacts(t) })
+
+	repo := initTestRepo(t)
+	logsRoot := t.TempDir()
+
+	pinned := writePinnedCatalog(t)
+	cxdbSrv := newCXDBTestServer(t)
+
+	cli := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(cli, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+
+out=""
+schema=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--output)
+      out="$2"
+      shift 2
+      ;;
+    --output-schema)
+      schema="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [[ -n "$schema" ]]; then
+  [[ -f "$schema" ]] || { echo "missing schema: $schema" >&2; exit 2; }
+fi
+if [[ -n "$out" ]]; then
+  echo '{"final":"ok","summary":"ok"}' > "$out"
+fi
+
+[[ -n "${KILROY_STAGE_STATUS_PATH:-}" ]] || { echo "missing KILROY_STAGE_STATUS_PATH" >&2; exit 31; }
+[[ -n "${KILROY_STAGE_STATUS_FALLBACK_PATH:-}" ]] || { echo "missing KILROY_STAGE_STATUS_FALLBACK_PATH" >&2; exit 32; }
+[[ "${KILROY_STAGE_STATUS_PATH}" = /* ]] || { echo "status path must be absolute" >&2; exit 33; }
+[[ "${KILROY_STAGE_STATUS_FALLBACK_PATH}" = /* ]] || { echo "fallback path must be absolute" >&2; exit 34; }
+
+mkdir -p "$(dirname "$KILROY_STAGE_STATUS_PATH")"
+cat > "$KILROY_STAGE_STATUS_PATH" <<'JSON'
+{"status":"success","notes":"status-contract-env"}
+JSON
+echo '{"type":"done","text":"ok"}'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &RunConfigFile{Version: 1}
+	cfg.Repo.Path = repo
+	cfg.CXDB.BinaryAddr = cxdbSrv.BinaryAddr()
+	cfg.CXDB.HTTPBaseURL = cxdbSrv.URL()
+	cfg.LLM.CLIProfile = "test_shim"
+	cfg.LLM.Providers = map[string]ProviderConfig{
+		"openai": {Backend: BackendCLI, Executable: cli},
+	}
+	cfg.ModelDB.OpenRouterModelInfoPath = pinned
+	cfg.ModelDB.OpenRouterModelInfoUpdatePolicy = "pinned"
+	cfg.Git.RunBranchPrefix = "attractor/run"
+
+	dot := []byte(`
+digraph G {
+  graph [goal="status contract env injected"]
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="say hi"]
+  start -> a -> exit
+}
+`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	res, err := RunWithConfig(ctx, dot, cfg, RunOptions{RunID: "status-contract-env-injected", LogsRoot: logsRoot, AllowTestShim: true})
+	if err != nil {
+		t.Fatalf("RunWithConfig: %v", err)
+	}
+
+	statusBytes, err := os.ReadFile(filepath.Join(res.LogsRoot, "a", "status.json"))
+	if err != nil {
+		t.Fatalf("read a/status.json: %v", err)
+	}
+	out, err := runtime.DecodeOutcomeJSON(statusBytes)
+	if err != nil {
+		t.Fatalf("decode a/status.json: %v", err)
+	}
+	if out.Status != runtime.StatusSuccess {
+		t.Fatalf("a status: got %q want %q (out=%+v)", out.Status, runtime.StatusSuccess, out)
+	}
+
+	var inv map[string]any
+	b, err := os.ReadFile(filepath.Join(res.LogsRoot, "a", "cli_invocation.json"))
+	if err != nil {
+		t.Fatalf("read cli_invocation.json: %v", err)
+	}
+	if err := json.Unmarshal(b, &inv); err != nil {
+		t.Fatalf("unmarshal cli_invocation.json: %v", err)
+	}
+	gotStatusPath := strings.TrimSpace(anyToString(inv["status_path"]))
+	if gotStatusPath == "" {
+		t.Fatalf("cli_invocation.status_path missing: %#v", inv)
+	}
+	if !filepath.IsAbs(gotStatusPath) {
+		t.Fatalf("cli_invocation.status_path must be absolute: %q", gotStatusPath)
+	}
+	if gotStatusPath != filepath.Join(res.WorktreeDir, "status.json") {
+		t.Fatalf("cli_invocation.status_path: got %q want %q", gotStatusPath, filepath.Join(res.WorktreeDir, "status.json"))
+	}
+	gotFallbackPath := strings.TrimSpace(anyToString(inv["status_fallback_path"]))
+	if gotFallbackPath != filepath.Join(res.WorktreeDir, ".ai", "status.json") {
+		t.Fatalf("cli_invocation.status_fallback_path: got %q want %q", gotFallbackPath, filepath.Join(res.WorktreeDir, ".ai", "status.json"))
+	}
+	if gotEnvKey := strings.TrimSpace(anyToString(inv["status_env_key"])); gotEnvKey != stageStatusPathEnvKey {
+		t.Fatalf("cli_invocation.status_env_key: got %q want %q", gotEnvKey, stageStatusPathEnvKey)
+	}
+}
+
 func TestRunWithConfig_CLIBackend_CapturesInvocationAndPersistsArtifactsToCXDB(t *testing.T) {
 	cleanupStrayEngineArtifacts(t)
 	t.Cleanup(func() { cleanupStrayEngineArtifacts(t) })

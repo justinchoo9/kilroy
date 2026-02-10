@@ -203,26 +203,14 @@ func copyFirstValidFallbackStatus(stageStatusPath string, fallbackPaths []fallba
 func (h *CodergenHandler) Execute(ctx context.Context, exec *Execution, node *model.Node) (runtime.Outcome, error) {
 	stageDir := filepath.Join(exec.LogsRoot, node.ID)
 	stageStatusPath := filepath.Join(stageDir, "status.json")
-	// Many DOT specs instruct the agent to "Write status.json" without specifying a path.
-	// The codergen backends run in the worktree, so treat common worktree status paths as a
-	// best-effort status-file contract signal and move/copy the first one found into the
-	// stage directory.
-	worktreeStatusPaths := []fallbackStatusPath{}
-	if exec != nil && strings.TrimSpace(exec.WorktreeDir) != "" {
-		worktreeStatusPaths = append(worktreeStatusPaths,
-			fallbackStatusPath{
-				path:   filepath.Join(exec.WorktreeDir, "status.json"),
-				source: statusSourceWorktree,
-			},
-			fallbackStatusPath{
-				path:   filepath.Join(exec.WorktreeDir, ".ai", "status.json"),
-				source: statusSourceDotAI,
-			},
-		)
-		// Clear stale files from prior stages so we don't accidentally attribute them.
-		for _, statusPath := range worktreeStatusPaths {
-			_ = os.Remove(statusPath.path)
-		}
+	contract := stageStatusContract{}
+	if exec != nil {
+		contract = buildStageStatusContract(exec.WorktreeDir)
+	}
+	worktreeStatusPaths := contract.Fallbacks
+	// Clear stale files from prior stages so we don't accidentally attribute them.
+	for _, statusPath := range worktreeStatusPaths {
+		_ = os.Remove(statusPath.path)
 	}
 
 	basePrompt := strings.TrimSpace(node.Prompt())
@@ -255,6 +243,21 @@ func (h *CodergenHandler) Execute(ctx context.Context, exec *Execution, node *mo
 		}
 		preamble := buildFidelityPreamble(exec.Context, runID, goal, fidelity, prevNode, decodeCompletedNodes(exec.Context))
 		promptText = strings.TrimSpace(preamble) + "\n\n" + basePrompt
+	}
+	if preamble := strings.TrimSpace(contract.PromptPreamble); preamble != "" {
+		if strings.TrimSpace(promptText) == "" {
+			promptText = preamble
+		} else {
+			promptText = preamble + "\n\n" + strings.TrimSpace(promptText)
+		}
+	}
+	if exec != nil && exec.Engine != nil && strings.TrimSpace(contract.PrimaryPath) != "" {
+		exec.Engine.appendProgress(map[string]any{
+			"event":                "status_contract",
+			"node_id":              node.ID,
+			"status_path":          contract.PrimaryPath,
+			"status_fallback_path": contract.FallbackPath,
+		})
 	}
 
 	if err := os.WriteFile(filepath.Join(stageDir, "prompt.md"), []byte(promptText), 0o644); err != nil {

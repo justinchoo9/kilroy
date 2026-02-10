@@ -177,6 +177,30 @@ func TestRunWithConfig_CLIBackend_StatusContractPath_HandlesNestedCD(t *testing.
 	if err := os.WriteFile(cli, []byte(`#!/usr/bin/env bash
 set -euo pipefail
 
+out=""
+schema=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--output)
+      out="$2"
+      shift 2
+      ;;
+    --output-schema)
+      schema="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [[ -n "$schema" ]]; then
+  [[ -f "$schema" ]] || { echo "missing schema: $schema" >&2; exit 2; }
+fi
+if [[ -n "$out" ]]; then
+  echo '{"final":"ok","summary":"ok"}' > "$out"
+fi
+
 [[ -n "${KILROY_STAGE_STATUS_PATH:-}" ]] || { echo "missing KILROY_STAGE_STATUS_PATH" >&2; exit 21; }
 [[ "${KILROY_STAGE_STATUS_PATH}" = /* ]] || { echo "status path must be absolute" >&2; exit 22; }
 
@@ -255,6 +279,11 @@ func TestRunWithConfig_CLIBackend_StatusContract_ClearsStaleWorktreeStatusBefore
 	t.Cleanup(func() { cleanupStrayEngineArtifacts(t) })
 
 	repo := initTestRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "status.json"), []byte(`{"status":"success","notes":"stale-root-status"}`), 0o644); err != nil {
+		t.Fatalf("seed stale status.json in repo: %v", err)
+	}
+	runCmd(t, repo, "git", "add", "status.json")
+	runCmd(t, repo, "git", "commit", "-m", "seed stale status")
 	logsRoot := t.TempDir()
 
 	pinned := writePinnedCatalog(t)
@@ -263,6 +292,31 @@ func TestRunWithConfig_CLIBackend_StatusContract_ClearsStaleWorktreeStatusBefore
 	cli := filepath.Join(t.TempDir(), "codex")
 	if err := os.WriteFile(cli, []byte(`#!/usr/bin/env bash
 set -euo pipefail
+
+out=""
+schema=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--output)
+      out="$2"
+      shift 2
+      ;;
+    --output-schema)
+      schema="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [[ -n "$schema" ]]; then
+  [[ -f "$schema" ]] || { echo "missing schema: $schema" >&2; exit 2; }
+fi
+if [[ -n "$out" ]]; then
+  echo '{"final":"ok","summary":"ok"}' > "$out"
+fi
+
 echo '{"type":"start"}'
 echo '{"type":"done","text":"ok"}'
 `), 0o755); err != nil {
@@ -286,11 +340,10 @@ digraph G {
   start [shape=Mdiamond]
   exit  [shape=Msquare]
 
-  seed [shape=parallelogram, tool_command="printf '{\"status\":\"success\",\"notes\":\"stale\"}' > status.json"]
   a [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="do the thing"]
   fix [shape=parallelogram, tool_command="echo fixed > fixed.txt"]
 
-  start -> seed -> a
+  start -> a
   a -> fix [condition="outcome=fail"]
   a -> exit [condition="outcome=success"]
   fix -> exit
@@ -340,6 +393,31 @@ func TestRunWithConfig_CLIBackend_StatusContractPromptPreambleWritten(t *testing
 	cli := filepath.Join(t.TempDir(), "codex")
 	if err := os.WriteFile(cli, []byte(`#!/usr/bin/env bash
 set -euo pipefail
+
+out=""
+schema=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--output)
+      out="$2"
+      shift 2
+      ;;
+    --output-schema)
+      schema="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [[ -n "$schema" ]]; then
+  [[ -f "$schema" ]] || { echo "missing schema: $schema" >&2; exit 2; }
+fi
+if [[ -n "$out" ]]; then
+  echo '{"final":"ok","summary":"ok"}' > "$out"
+fi
+
 cat > status.json <<'JSON'
 {"status":"success","notes":"ok"}
 JSON

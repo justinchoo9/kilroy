@@ -143,3 +143,29 @@ func TestLocalExecutionEnvironment_ListDirectory_Depth(t *testing.T) {
 		t.Fatalf("expected nested entry at depth=2: %+v", ents2)
 	}
 }
+
+func TestLocalExecutionEnvironment_ExecCommand_MergesBaseEnvAndCallEnv(t *testing.T) {
+	base := map[string]string{
+		"KILROY_STAGE_STATUS_PATH":          "/tmp/base/status.json",
+		"KILROY_STAGE_STATUS_FALLBACK_PATH": "/tmp/base/.ai/status.json",
+		"BASE_ONLY":                         "base",
+	}
+	env := NewLocalExecutionEnvironmentWithBaseEnv(t.TempDir(), base)
+	base["BASE_ONLY"] = "mutated"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := env.ExecCommand(
+		ctx,
+		"printf '%s|%s|%s' \"$KILROY_STAGE_STATUS_PATH\" \"$KILROY_STAGE_STATUS_FALLBACK_PATH\" \"$BASE_ONLY\"",
+		5_000,
+		"",
+		map[string]string{"BASE_ONLY": "override"},
+	)
+	if err != nil {
+		t.Fatalf("ExecCommand: %v (res=%+v)", err, res)
+	}
+	if got, want := strings.TrimSpace(res.Stdout), "/tmp/base/status.json|/tmp/base/.ai/status.json|override"; got != want {
+		t.Fatalf("stdout: got %q want %q", got, want)
+	}
+}

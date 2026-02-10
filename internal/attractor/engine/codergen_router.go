@@ -147,6 +147,7 @@ func (r *CodergenRouter) runAPI(ctx context.Context, execCtx *Execution, node *m
 	if err != nil {
 		return "", nil, err
 	}
+	contract := buildStageStatusContract(execCtx.WorktreeDir)
 	mode := strings.ToLower(strings.TrimSpace(node.Attr("codergen_mode", "")))
 	if mode == "" {
 		mode = "agent_loop" // metaspec default for API backend
@@ -198,7 +199,7 @@ func (r *CodergenRouter) runAPI(ctx context.Context, execCtx *Execution, node *m
 		})
 		return text, nil, nil
 	case "agent_loop":
-		env := agent.NewLocalExecutionEnvironment(execCtx.WorktreeDir)
+		env := agent.NewLocalExecutionEnvironmentWithBaseEnv(execCtx.WorktreeDir, contract.EnvVars)
 		text, used, err := r.withFailoverText(ctx, execCtx, node, client, provider, modelID, func(prov string, mid string) (string, error) {
 			var profile agent.ProviderProfile
 			var profileErr error
@@ -817,6 +818,7 @@ func profileForProvider(provider string, modelID string) (agent.ProviderProfile,
 
 func (r *CodergenRouter) runCLI(ctx context.Context, execCtx *Execution, node *model.Node, provider string, modelID string, prompt string) (string, *runtime.Outcome, error) {
 	stageDir := filepath.Join(execCtx.LogsRoot, node.ID)
+	contract := buildStageStatusContract(execCtx.WorktreeDir)
 	providerKey := normalizeProviderKey(provider)
 	stderrPath := filepath.Join(stageDir, "stderr.log")
 	readStderr := func() string {
@@ -922,6 +924,9 @@ func (r *CodergenRouter) runCLI(ctx context.Context, execCtx *Execution, node *m
 			inv["env_scrubbed_keys"] = scrubbed
 		}
 	}
+	inv["status_path"] = contract.PrimaryPath
+	inv["status_fallback_path"] = contract.FallbackPath
+	inv["status_env_key"] = stageStatusPathEnvKey
 	if structuredOutPath != "" {
 		inv["structured_output_path"] = structuredOutPath
 	}
@@ -938,10 +943,11 @@ func (r *CodergenRouter) runCLI(ctx context.Context, execCtx *Execution, node *m
 		cmd := exec.CommandContext(ctx, exe, args...)
 		cmd.Dir = execCtx.WorktreeDir
 		if codexSemantics {
-			cmd.Env = isolatedEnv
+			cmd.Env = mergeEnvWithOverrides(isolatedEnv, contract.EnvVars)
 			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		} else {
-			cmd.Env = scrubConflictingProviderEnvKeys(os.Environ(), providerKey)
+			baseEnv := scrubConflictingProviderEnvKeys(os.Environ(), providerKey)
+			cmd.Env = mergeEnvWithOverrides(baseEnv, contract.EnvVars)
 		}
 		if promptMode == "stdin" {
 			cmd.Stdin = strings.NewReader(prompt)

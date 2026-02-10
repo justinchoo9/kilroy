@@ -18,10 +18,19 @@ import (
 
 type LocalExecutionEnvironment struct {
 	RootDir string
+	BaseEnv map[string]string
+}
+
+func NewLocalExecutionEnvironmentWithBaseEnv(rootDir string, baseEnv map[string]string) *LocalExecutionEnvironment {
+	cp := map[string]string{}
+	for k, v := range baseEnv {
+		cp[k] = v
+	}
+	return &LocalExecutionEnvironment{RootDir: rootDir, BaseEnv: cp}
 }
 
 func NewLocalExecutionEnvironment(rootDir string) *LocalExecutionEnvironment {
-	return &LocalExecutionEnvironment{RootDir: rootDir}
+	return NewLocalExecutionEnvironmentWithBaseEnv(rootDir, nil)
 }
 
 func (e *LocalExecutionEnvironment) WorkingDirectory() string { return e.RootDir }
@@ -246,7 +255,14 @@ func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command str
 	cmd := exec.Command("bash", "-lc", command)
 	cmd.Dir = dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = filteredEnv(envVars)
+	mergedEnv := map[string]string{}
+	for k, v := range e.BaseEnv {
+		mergedEnv[k] = v
+	}
+	for k, v := range envVars {
+		mergedEnv[k] = v
+	}
+	cmd.Env = filteredEnv(mergedEnv)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
