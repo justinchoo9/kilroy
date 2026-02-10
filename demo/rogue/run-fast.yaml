@@ -21,7 +21,7 @@ llm:
         profile_family: openai
     zai:
       backend: api
-      failover: []
+      failover: [kimi]
       api:
         protocol: openai_chat_completions
         api_key_env: ZAI_API_KEY
