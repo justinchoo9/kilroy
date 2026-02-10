@@ -425,6 +425,12 @@ func shouldFailoverLLMError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, agent.ErrTurnLimit) {
+		return false
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "turn limit reached") {
+		return false
+	}
 	var ce *llm.ConfigurationError
 	if errors.As(err, &ce) {
 		return false

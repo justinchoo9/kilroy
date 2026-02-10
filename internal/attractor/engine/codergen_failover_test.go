@@ -251,3 +251,15 @@ func TestShouldFailoverLLMError_NotFoundDoesNotFailover(t *testing.T) {
 		t.Fatalf("404 NotFoundError should not trigger failover")
 	}
 }
+
+func TestShouldFailoverLLMError_TurnLimitDoesNotFailover(t *testing.T) {
+	if shouldFailoverLLMError(agent.ErrTurnLimit) {
+		t.Fatalf("agent.ErrTurnLimit should not trigger failover")
+	}
+	if shouldFailoverLLMError(fmt.Errorf("wrapped: %w", agent.ErrTurnLimit)) {
+		t.Fatalf("wrapped turn limit should not trigger failover")
+	}
+	if shouldFailoverLLMError(fmt.Errorf("turn limit reached")) {
+		t.Fatalf("legacy turn-limit string should not trigger failover")
+	}
+}

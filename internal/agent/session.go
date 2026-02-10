@@ -41,6 +41,9 @@ type SessionConfig struct {
 	LLMSleep       llm.SleepFunc
 }
 
+// ErrTurnLimit indicates the session exceeded its configured MaxTurns budget.
+var ErrTurnLimit = errors.New("turn limit reached")
+
 func (c *SessionConfig) applyDefaults() {
 	if c.MaxToolRoundsPerInput <= 0 {
 		c.MaxToolRoundsPerInput = 200
@@ -419,7 +422,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 
 			if s.cfg.MaxTurns > 0 && turns > s.cfg.MaxTurns {
 				s.emit(EventTurnLimit, map[string]any{"max_turns": s.cfg.MaxTurns})
-				return "", fmt.Errorf("turn limit reached")
+				return "", fmt.Errorf("%w (max_turns=%d)", ErrTurnLimit, s.cfg.MaxTurns)
 			}
 
 		req := llm.Request{

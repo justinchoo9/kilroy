@@ -205,7 +205,7 @@ If the input is short/vague, expand into a structured spec covering: what the so
 
 Break the spec into units. Each unit must be:
 
-- **Achievable in one agent session** (~25 agent turns, ~20 min)
+- **Achievable in one agent session** (right-size turn budget: ~6-12 for simple checks, ~40-80 for broad implementation/analysis)
 - **Testable** with a concrete command (build, test, lint, etc.)
 - **Clearly bounded** by files created/modified
 
@@ -578,7 +578,7 @@ Common repairs (use validator output; do not guess blindly):
 | `retry_target` | Node ID to jump to if this goal_gate fails |
 | `fallback_retry_target` | Secondary retry target |
 | `allow_partial` | `true` = accept PARTIAL_SUCCESS when retries exhausted instead of FAIL. Use on long-running nodes where partial progress is valuable. |
-| `max_agent_turns` | Max LLM turn count for this node's agent session. Use to right-size effort per task (e.g., 4 for a simple check, 25 for complex implementation). |
+| `max_agent_turns` | Max LLM turn count for this node's agent session. Use to right-size effort per task (e.g., 6-12 for simple checks, 40-80 for broad implementation/analysis). Avoid budgets so tight that they force provider failover before the task is complete. |
 | `timeout` | Duration (e.g., `"300"`, `"900s"`, `"15m"`). Applies to any node type. Bare integers are seconds. |
 | `auto_status` | `true` = auto-generate SUCCESS outcome if handler writes no status.json. Only use on `expand_spec`. |
 | `llm_model` | Override model for this node (overrides stylesheet) |

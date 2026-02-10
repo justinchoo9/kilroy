@@ -23,7 +23,7 @@ digraph rogue_fast {
     expand_spec [
         shape=box,
         auto_status=true,
-        max_agent_turns=15,
+        max_agent_turns=40,
         prompt="You are bootstrapping a spec for porting Rogue 5.4.4 from C to Rust/WASM.\n\nThe DELIVERABLE is a playable game in a web browser. The user opens demo/rogue/rogue-wasm/www/index.html, and Rogue runs — rendered as classic ASCII in an 80x24 terminal grid, compiled from Rust to WebAssembly via wasm-pack.\n\nRequirements:\n- Exact mechanical port: same dungeon generation algorithms, monster stats, item tables, RNG seed behavior. 1:1 Rust translation of all C game logic.\n- Full scope: dungeon gen, combat, all item types (14 potions, 18 scrolls, 14 rings, 14 sticks, 9 weapons, 8 armors), 26 monster types with chase AI, save/load (localStorage), scoring, wizard mode, options, daemon/fuse scheduling.\n- Build target: Rust -> WASM via wasm-pack + wasm-bindgen (--target web), served from a single HTML page.\n- Rendering: classic ASCII terminal — '@' player, '#' corridors, '.' floors, monster letters A-Z. 80 columns x 24 rows. Monospace font, dark background. Keyboard input for all commands.\n- The C source is at demo/rogue/original-rogue/ (~16,800 lines across 33 .c files).\n\nSource structure (demo/rogue/original-rogue/):\n  Core: main.c (396L), command.c (820L), rogue.h (753L), extern.h (197L), extern.c (391L)\n  Dungeon: rooms.c (472L), passages.c (424L), new_level.c (231L)\n  Combat: fight.c (686L), weapons.c (288L), armor.c (89L)\n  Items: potions.c (375L), scrolls.c (329L), rings.c (204L), sticks.c (431L), things.c (713L)\n  Monsters: monsters.c (252L), chase.c (541L), daemon.c (181L), daemons.c (295L)\n  Player: move.c (425L), pack.c (503L), list.c (113L)\n  UI/IO: io.c (277L), rip.c (449L), options.c (501L)\n  State: state.c (2134L), save.c (390L), init.c (447L)\n  Platform: mach_dep.c (457L), mdport.c (1432L)\n  Misc: misc.c (597L), wizard.c (284L), xcrypt.c (707L), vers.c (17L)\n\nDisambiguation / Assumptions:\n- ncurses is replaced by a WASM-exported API consumed by a JS terminal renderer in index.html.\n- The C THING union becomes a Rust enum. Global state becomes a GameState struct.\n- Save/load uses serde + localStorage (no filesystem).\n- No networking — single-player browser game.\n- The final artifact is: demo/rogue/rogue-wasm/www/index.html that loads pkg/rogue_wasm.js + .wasm.\n\nExpand into a detailed spec covering:\n1. Project layout (Cargo.toml, src/ modules, www/ HTML+JS+CSS)\n2. Rust module map (C files -> Rust modules)\n3. Core type definitions\n4. WASM bridge API (exported functions, JS->Rust event flow)\n5. Terminal renderer spec (80x24 grid, char rendering, color, keyboard handling)\n6. RNG porting strategy (exact C formula reproduction)\n7. System-by-system porting notes\n8. Build pipeline: cargo build --lib, wasm-pack build --target web, then open www/index.html\n9. Test plan: cargo test (unit tests per module), wasm-pack test --headless --chrome\n10. QA acceptance criteria: the game loads in a browser, you can move with hjkl, fight monsters, pick up items, go down stairs, and die with a tombstone\n\nWrite the spec to .ai/spec.md.\nWrite status.json: outcome=success"
     ]
 
@@ -34,14 +34,14 @@ digraph rogue_fast {
     impl_analysis [
         shape=box,
         class="hard",
-        max_agent_turns=25,
+        max_agent_turns=60,
         prompt="Goal: $goal\n\nPerform a deep analysis of the entire Rogue C source at demo/rogue/original-rogue/.\n\nRead EVERY .c and .h file. Catalog:\n1. All data structures (structs, unions, typedefs) with field-level detail\n2. All global variables (from extern.c, extern.h, rogue.h) — name, type, initial value, which files read/write them\n3. All #define constants and macros — gameplay constants (MAXROOMS=9, AMULETLEVEL=26, HUNGERTIME=1300, etc.) and convenience macros (when, otherwise, until, ce, hero, pstats, on(), winat, INDEX, chat, flat, moat)\n4. Every function signature grouped by source file, with brief description\n5. Cross-file dependency graph\n6. The ncurses API surface — every ncurses call used and where (mvaddch, move, refresh, getch, WINDOW, waddch, etc.)\n7. Game loop: main() -> playit() -> command() -> do_daemons/do_fuses -> monster turns\n8. Memory patterns (linked list attach/detach, new_item/discard)\n9. RNG: seed = seed*11109+13849, RN macro = (seed >> 16) & 0xffff, rnd(range), roll(n,s), spread(nm)\n10. Platform code in mach_dep.c/mdport.c that needs WASM equivalents vs. can be dropped\n\nWrite to .ai/rogue_analysis.md.\nWrite status.json: outcome=success"
     ]
 
     verify_analysis [
         shape=box,
         class="verify",
-        max_agent_turns=8,
+        max_agent_turns=24,
         prompt="Verify the C source analysis.\n\nRead .ai/rogue_analysis.md. Cross-check against actual C source:\n1. All 33 .c files covered\n2. All structs from rogue.h documented (THING, PLACE, room, stats, monster, obj_info, h_list, coord, delayed_action, STONE)\n3. All globals from extern.c listed\n4. Spot-check 5 functions for accuracy\n5. ncurses API surface listed\n6. RNG algorithm correctly documented\n\nWrite to .ai/verify_analysis.md.\nWrite status.json: outcome=success if comprehensive, outcome=fail with gaps."
     ]
 
@@ -54,14 +54,14 @@ digraph rogue_fast {
     impl_architecture [
         shape=box,
         class="hard",
-        max_agent_turns=20,
+        max_agent_turns=50,
         prompt="Goal: $goal\n\nRead .ai/spec.md and .ai/rogue_analysis.md.\n\nDesign the Rust/WASM architecture. Write .ai/rogue_architecture.md:\n\n1. **Rust Module Layout** (all under demo/rogue/rogue-wasm/src/):\n   lib.rs — #[wasm_bindgen] exports, WASM entry\n   types.rs — Coord, Thing enum, Place, Room, Stats, Monster, ObjInfo, all constants, bitflags\n   rng.rs — exact C RNG port\n   game.rs — GameState struct (all globals), game loop\n   dungeon.rs — rooms, passages, new_level, maze\n   combat.rs — fight, hit/miss, damage, saving throws\n   items.rs — potions, scrolls, rings, sticks, weapons, armor, things, inventory\n   monsters.rs — monster table, chase AI, spawn\n   daemon.rs — daemon/fuse scheduling, specific daemons\n   player.rs — movement, commands, look, search, traps\n   io_bridge.rs — message system, status line (replaces ncurses I/O)\n   state.rs — save/load via serde + localStorage\n   init.rs — initialization, random names/colors/materials\n   score.rs — death screen, tombstone, scoring\n   wizard.rs — wizard mode\n\n2. **Type Mappings**: THING union -> enum Thing { Monster{..}, Object{..} }; globals -> GameState fields; WINDOW -> screen buffer [Cell; 80*24]; C macros -> const/fn; bit flags -> bitflags!\n\n3. **WASM Bridge**: new_game(seed) -> Game; Game.process_key(key) returns JSON {screen: [[{ch,fg,bg}]], message: str, status: str, game_over: bool}; Game.save_to_storage(); Game.load_from_storage()\n\n4. **JS Terminal Renderer** (in www/index.html):\n   - 80x24 <pre> grid or CSS grid of <span> elements\n   - document.onkeydown -> game.process_key(e.key)\n   - Render loop: parse JSON screen, update DOM spans\n   - Color map: curses COLOR_RED/GREEN/etc. -> CSS colors\n\n5. **ncurses Replacement**: mvaddch -> screen_buf[y][x] = Cell; refresh -> noop (JS reads buffer after process_key); getch -> key passed in from JS; all output buffered, returned per-turn\n\n6. **Cross-Module Interfaces**: exact function signatures each module exports, so parallel branches can code against them independently\n\n7. **Build & Serve**: wasm-pack build --target web produces pkg/; www/index.html loads pkg/rogue_wasm.js; open www/index.html in browser to play\n\nWrite status.json: outcome=success"
     ]
 
     verify_architecture [
         shape=box,
         class="verify",
-        max_agent_turns=8,
+        max_agent_turns=24,
         prompt="Verify architecture design.\n\nRead .ai/rogue_architecture.md and .ai/rogue_analysis.md.\n1. Every C file has a Rust module assignment\n2. Every C struct has a Rust type mapping\n3. WASM bridge covers all gameplay interactions\n4. ncurses replacement covers all used ncurses functions\n5. Cross-module interfaces defined\n6. Build pipeline is clear: wasm-pack build --target web, then open www/index.html\n\nWrite to .ai/verify_architecture.md.\nWrite status.json: outcome=success if complete, outcome=fail with gaps."
     ]
 
@@ -74,7 +74,7 @@ digraph rogue_fast {
     impl_scaffold [
         shape=box,
         class="hard",
-        max_agent_turns=25,
+        max_agent_turns=60,
         max_retries=2,
         prompt="Goal: $goal\n\nRead .ai/spec.md and .ai/rogue_architecture.md.\n\nCreate the Rust/WASM project at demo/rogue/rogue-wasm/:\n\n1. **Cargo.toml**:\n   [package] name=\"rogue-wasm\", edition=\"2021\"\n   [lib] crate-type=[\"cdylib\",\"rlib\"]\n   [dependencies] wasm-bindgen=\"0.2\", web-sys={version=\"0.3\",features=[\"Window\",\"Document\",\"Storage\",\"console\"]}, js-sys=\"0.3\", serde={version=\"1\",features=[\"derive\"]}, serde_json=\"1\", bitflags=\"2\"\n   [dev-dependencies] wasm-bindgen-test=\"0.3\"\n\n2. **src/types.rs** — ALL core types from rogue.h:\n   Coord, Stats, Thing enum (Monster/Object variants with all fields), Place, Room, Monster template, ObjInfo, HelpEntry, DelayedAction, Cell (ch+fg+bg for screen)\n   ALL constants: MAXROOMS=9, MAXTHINGS=9, MAXOBJ=9, MAXPACK=23, MAXTRAPS=10, AMULETLEVEL=26, NUMTHINGS=7, MAXPASS=13, NUMLINES=24, NUMCOLS=80, MAXDAEMONS=20\n   All item type IDs (P_CONFUSE..P_LEVIT, S_CONFUSE..S_PROTECT, weapon/armor/ring/stick types)\n   All flag bits via bitflags! (room: ISDARK/ISGONE/ISMAZE; object: ISCURSED/ISKNOW/etc.; creature: CANHUH/ISRUN/ISMEAN/etc.; map: F_PASS/F_SEEN/etc.)\n   Trap types, display chars (PASSAGE='#', DOOR='+', FLOOR='.', PLAYER='@', etc.)\n\n3. **src/rng.rs** — EXACT C RNG:\n   pub struct Rng { seed: i32 }\n   fn rn(&mut self) -> u16 { self.seed = self.seed.wrapping_mul(11109).wrapping_add(13849); ((self.seed >> 16) & 0xffff) as u16 }\n   fn rnd(&mut self, range: i32) -> i32 { (self.rn() as i32 % range).abs() }\n   fn roll(&mut self, number: i32, sides: i32) -> i32 { sum of number calls to rnd(sides)+1 }\n   fn spread(&mut self, nm: i32) -> i32 { rnd(nm - nm/20 + 1) + nm - nm/10 }\n\n4. **src/game.rs** — GameState struct with ALL globals from extern.c:\n   All bools, strings, ints, level state, rooms array, places grid, player Thing, monster list, object list, daemon list, Rng, screen buffer [Cell; NUMCOLS*NUMLINES]\n\n5. **src/lib.rs** — WASM entry:\n   #[wasm_bindgen] pub struct Game { state: GameState }\n   #[wasm_bindgen] impl Game { pub fn new(seed: u32) -> Game; pub fn process_key(&mut self, key: &str) -> String; pub fn get_screen_json(&self) -> String; pub fn save_game(&self) -> String; pub fn load_game(&mut self, data: &str); }\n   Stub implementations that compile.\n\n6. **Stub modules**: dungeon.rs, combat.rs, items.rs, monsters.rs, daemon.rs, player.rs, io_bridge.rs, state.rs, init.rs, score.rs, wizard.rs — each with comments and empty pub fn stubs matching architecture interfaces.\n\n7. **www/index.html** — THE PLAYABLE WEB PAGE:\n   <!DOCTYPE html> with <pre id=\"terminal\"> styled 80x24, black bg, monospace\n   <script type=\"module\"> imports from ../pkg/rogue_wasm.js\n   On load: init WASM, game = Game.new(Date.now()), render initial screen\n   document.onkeydown: result = game.process_key(e.key), update terminal grid\n   Render function: parse JSON screen, set each <span> textContent and color\n   Shows \"Loading Rogue...\" until WASM loads, then \"Press any key to start\"\n\nAfter creating everything, run:\n  cd demo/rogue/rogue-wasm && cargo build --lib 2>&1\n\nMUST compile. Write status.json: outcome=success if compiles, outcome=fail with errors."
     ]
@@ -82,7 +82,7 @@ digraph rogue_fast {
     verify_scaffold [
         shape=box,
         class="verify",
-        max_agent_turns=8,
+        max_agent_turns=24,
         prompt="Verify project scaffold.\n\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. src/types.rs defines Coord, Thing, Place, Room, Stats, all constants\n3. src/rng.rs has the exact formula: seed*11109+13849, shift right 16, mask 0xffff\n4. src/game.rs defines GameState with screen buffer, rooms, places, player, monsters\n5. src/lib.rs has #[wasm_bindgen] Game with new(), process_key(), get_screen_json()\n6. All 11 stub modules exist\n7. www/index.html exists with terminal <pre>, WASM import, keyboard handler, render loop\n8. Cargo.toml has wasm-bindgen, web-sys, serde, bitflags\n\nWrite to .ai/verify_scaffold.md.\nWrite status.json: outcome=success if all pass, outcome=fail with details."
     ]
 
@@ -99,7 +99,7 @@ digraph rogue_fast {
     impl_dungeon [
         shape=box,
         class="hard",
-        max_agent_turns=25,
+        max_agent_turns=60,
         max_retries=2,
         llm_model="kimi-k2.5",
         llm_provider="kimi",
@@ -109,7 +109,7 @@ digraph rogue_fast {
     verify_dungeon [
         shape=box,
         class="verify",
-        max_agent_turns=8,
+        max_agent_turns=24,
         llm_model="kimi-k2.5",
         llm_provider="kimi",
         prompt="Verify dungeon port.\n\nRun: cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 && cargo test dungeon 2>&1\n\nCompare src/dungeon.rs against C source:\n1. All 12 functions implemented\n2. do_rooms() matches rooms.c 3x3 grid layout\n3. conn() matches passages.c corridor algorithm\n4. new_level() initialization sequence matches new_level.c\n5. Maze generation matches rooms.c do_maze()\n6. Unit tests pass\n\nWrite to .ai/verify_dungeon.md.\nWrite status.json: outcome=success if faithful and tests pass, outcome=fail with issues."
@@ -122,7 +122,7 @@ digraph rogue_fast {
     impl_combat_items [
         shape=box,
         class="hard",
-        max_agent_turns=25,
+        max_agent_turns=60,
         max_retries=2,
         llm_model="kimi-k2.5",
         llm_provider="kimi",
@@ -132,7 +132,7 @@ digraph rogue_fast {
     verify_combat_items [
         shape=box,
         class="verify",
-        max_agent_turns=8,
+        max_agent_turns=24,
         llm_model="kimi-k2.5",
         llm_provider="kimi",
         prompt="Verify combat/items port.\n\nRun: cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 && cargo test combat items 2>&1\n\nCompare against C source:\n1. fight()/swing()/roll_em() match fight.c\n2. All 14 potion effects match potions.c\n3. All 18 scroll effects match scrolls.c\n4. pot_info/scr_info/ring_info/ws_info tables match things.c exactly\n5. Weapon damage strings match weapons.c\n6. Armor AC values match armor.c\n7. Unit tests pass\n\nWrite to .ai/verify_combat_items.md.\nWrite status.json: outcome=success if faithful and tests pass, outcome=fail with issues."
@@ -145,7 +145,7 @@ digraph rogue_fast {
     impl_monsters [
         shape=box,
         class="hard",
-        max_agent_turns=25,
+        max_agent_turns=60,
         max_retries=2,
         llm_model="glm-4.7",
         llm_provider="zai",
@@ -155,7 +155,7 @@ digraph rogue_fast {
     verify_monsters [
         shape=box,
         class="verify",
-        max_agent_turns=8,
+        max_agent_turns=24,
         llm_model="glm-4.7",
         llm_provider="zai",
         prompt="Verify monster/AI/daemon port.\n\nRun: cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 && cargo test monster daemon 2>&1\n\nCompare against C source:\n1. All 26 monster entries match monsters.c\n2. chase/do_chase matches chase.c\n3. daemon scheduling matches daemon.c\n4. Hunger timing matches daemons.c (HUNGERTIME=1300, MORETIME=150)\n5. HP regen formula matches doctor() in daemons.c\n6. Unit tests pass\n\nWrite to .ai/verify_monsters.md.\nWrite status.json: outcome=success if faithful and tests pass, outcome=fail with issues."
@@ -168,7 +168,7 @@ digraph rogue_fast {
     impl_player_io [
         shape=box,
         class="hard",
-        max_agent_turns=25,
+        max_agent_turns=60,
         max_retries=2,
         llm_model="glm-4.7",
         llm_provider="zai",
@@ -178,7 +178,7 @@ digraph rogue_fast {
     verify_player_io [
         shape=box,
         class="verify",
-        max_agent_turns=8,
+        max_agent_turns=24,
         llm_model="glm-4.7",
         llm_provider="zai",
         prompt="Verify player/IO/state port.\n\nRun: cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 && cargo test player io init score 2>&1\n\nCompare against C source:\n1. command() dispatches all keys from command.c\n2. do_move() matches move.c\n3. Message system matches io.c\n4. Status line format: \"Level: X Hits: X(X) Str: X Gold: X Armor: X Exp: X/X\"\n5. Tombstone ASCII art matches rip.c\n6. init_player() stats match init.c (STR=16, HP=12)\n7. save/load roundtrip works\n8. Unit tests pass\n\nWrite to .ai/verify_player_io.md.\nWrite status.json: outcome=success if faithful and tests pass, outcome=fail with issues."
@@ -196,7 +196,7 @@ digraph rogue_fast {
     impl_integration [
         shape=box,
         class="hard",
-        max_agent_turns=25,
+        max_agent_turns=60,
         max_retries=2,
         prompt="Goal: $goal\n\nAll four system ports are complete. Integrate into a playable browser game.\n\nRead: .ai/rogue_architecture.md, .ai/port_dungeon.md, .ai/port_combat_items.md, .ai/port_monsters.md, .ai/port_player_io.md\nRead: all files in demo/rogue/rogue-wasm/src/\n\nIntegration tasks:\n\n1. **Main game loop** in src/game.rs — wire the exact C turn sequence:\n   new_game(seed): init RNG -> init_player -> init_colors/stones/materials/names/probs -> new_level() -> start_daemon(runners/doctor/stomach/swander)\n   process_key(key): do_daemons(BEFORE) -> do_fuses(BEFORE) -> command dispatch -> do_daemons(AFTER) -> do_fuses(AFTER) -> update screen -> return frame\n\n2. **Cross-module wiring**:\n   - new_level() calls new_monster(), put_things(), add gold\n   - command() calls combat, items, dungeon, player functions\n   - killed() calls give_pack(), add XP, check_level()\n   - Daemon callbacks reference runners/doctor/stomach/swander\n   - Resolve ALL borrow checker issues\n\n3. **WASM bridge** in src/lib.rs:\n   #[wasm_bindgen] Game wrapping GameState\n   new(seed: u32) -> Game — calls new_game\n   process_key(&mut self, key: &str) -> String — JSON: {screen: [[{ch,fg,bg}; 80]; 24], message: String, status: String, game_over: bool}\n   save_game(&self) -> String\n   load_game(&mut self, data: &str)\n\n4. **HTML frontend** — update www/index.html to be FULLY PLAYABLE:\n   <pre id=\"terminal\"> styled: width:80ch, height:24 lines, font-family:monospace, background:#000, color:#0f0\n   WASM import: import init, { Game } from '../pkg/rogue_wasm.js'\n   On load: await init(), game = Game.new(Date.now()), render()\n   Keyboard: document.addEventListener('keydown', e => { result = game.process_key(mapKey(e)); render(JSON.parse(result)); e.preventDefault(); })\n   mapKey: ArrowUp->k, ArrowDown->j, ArrowLeft->h, ArrowRight->l, all other keys pass through\n   Render: for each row/col, set span text and color from screen data\n   Game over: show message, offer restart\n   Save/Load: buttons or S key triggers localStorage save\n\n5. **Build and verify**:\n   cd demo/rogue/rogue-wasm && wasm-pack build --target web 2>&1\n   Verify pkg/ contains rogue_wasm.js and rogue_wasm_bg.wasm\n   Verify www/index.html correctly imports from ../pkg/\n\nThe game MUST compile to WASM. After wasm-pack build, a user should be able to open www/index.html (via a local server like python3 -m http.server) and play Rogue.\n\nWrite log to .ai/integration_log.md.\nWrite status.json: outcome=success if wasm-pack build succeeds, outcome=fail with errors."
     ]
@@ -204,7 +204,7 @@ digraph rogue_fast {
     verify_integration [
         shape=box,
         class="verify",
-        max_agent_turns=10,
+        max_agent_turns=30,
         prompt="Verify full WASM integration.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. cd demo/rogue/rogue-wasm && wasm-pack build --target web 2>&1 — must succeed\n3. ls demo/rogue/rogue-wasm/pkg/ — must contain rogue_wasm.js and rogue_wasm_bg.wasm\n4. Verify www/index.html imports from ../pkg/rogue_wasm.js\n5. Verify www/index.html has: terminal grid, keyboard handler, render function, WASM init\n6. Verify Game struct exports: new(), process_key(), save_game(), load_game()\n7. Verify game loop in game.rs follows C turn order\n8. Run: cd demo/rogue/rogue-wasm && cargo test 2>&1 — all unit tests pass\n\nWrite to .ai/verify_integration.md.\nWrite status.json: outcome=success if all pass, outcome=fail with details."
     ]
 
@@ -217,7 +217,7 @@ digraph rogue_fast {
     impl_qa [
         shape=box,
         class="hard",
-        max_agent_turns=20,
+        max_agent_turns=50,
         max_retries=2,
         prompt="Goal: $goal\n\nThe game compiles to WASM. Now add comprehensive tests and verify correctness.\n\nRead: .ai/rogue_analysis.md (C behavior reference), all src/ files\n\nAdd tests in demo/rogue/rogue-wasm/tests/ and src/ modules:\n\n1. **RNG fidelity test** (critical):\n   - Port the C RNG test: seed=42, call rnd(100) 20 times, record values\n   - Compile and run the C version with same seed, compare outputs\n   - The sequences MUST match exactly\n\n2. **Dungeon generation tests**:\n   - Fixed seed produces identical room layouts\n   - All rooms within bounds (0..NUMCOLS, 0..NUMLINES)\n   - Passages connect rooms (BFS from room 0 reaches all non-gone rooms)\n   - Stairs exist on every level\n\n3. **Monster table integrity**:\n   - 26 monsters A-Z all defined\n   - Stats match C source values exactly\n   - Spot-check: 'D' dragon carry=100, flags=ISMEAN, dmg=\"1d8/1d8/3d10\"\n\n4. **Combat math tests**:\n   - swing() with known inputs matches C formula\n   - roll_em() dice parsing: \"2d6\" -> [2,12], \"1d4\" -> [1,4]\n   - save_throw() with known level/type matches C\n\n5. **Item generation tests**:\n   - pick_one() probability distribution matches cum_prob tables\n   - All 14 potions, 18 scrolls, 14 rings, 14 sticks generatable\n\n6. **Game loop integration test**:\n   - Create game with fixed seed\n   - Send key sequence: wait, move right, move down, wait\n   - Verify screen changes (player '@' moves)\n   - Verify status line updates\n\n7. **Save/load roundtrip test**:\n   - Create game, make some moves\n   - save_game() -> JSON string\n   - load_game(json) -> new state\n   - Compare: same level, same player position, same HP, same inventory\n\n8. **WASM binding test** (wasm-bindgen-test):\n   - Game::new(42) succeeds\n   - process_key(\"l\") returns valid JSON\n   - get_screen_json() returns parseable 80x24 grid\n\nRun:\n  cd demo/rogue/rogue-wasm && cargo test 2>&1\n  cd demo/rogue/rogue-wasm && wasm-pack test --headless --chrome 2>&1 || wasm-pack test --node 2>&1\n\nWrite test results to .ai/qa_results.md with pass/fail per category.\nWrite status.json: outcome=success if all tests pass, outcome=fail with failures."
     ]
@@ -225,7 +225,7 @@ digraph rogue_fast {
     verify_qa [
         shape=box,
         class="verify",
-        max_agent_turns=8,
+        max_agent_turns=24,
         prompt="Verify QA test suite.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo test 2>&1 — capture full output\n2. cd demo/rogue/rogue-wasm && wasm-pack test --node 2>&1 — capture output\n3. Count: total tests, passed, failed\n4. Check .ai/qa_results.md for any failures\n5. If any test fails, document exactly which and why\n\nWrite to .ai/verify_qa.md.\nWrite status.json: outcome=success if ALL tests pass (0 failures), outcome=fail with failure details."
     ]
 
@@ -239,7 +239,7 @@ digraph rogue_fast {
         shape=box,
         class="review",
         goal_gate=true,
-        max_agent_turns=20,
+        max_agent_turns=50,
         prompt="Goal: $goal\n\nFinal review of the complete Rogue C-to-Rust/WASM port. You are reviewing work done by other models.\n\nRead: .ai/spec.md, .ai/rogue_analysis.md, .ai/rogue_architecture.md, .ai/qa_results.md\nRead: all files in demo/rogue/rogue-wasm/src/, demo/rogue/rogue-wasm/www/index.html\n\nReview checklist:\n\n1. **WASM deliverable**: Run `cd demo/rogue/rogue-wasm && wasm-pack build --target web 2>&1`. MUST succeed. Verify pkg/ has .wasm + .js. Verify www/index.html loads the WASM and renders a terminal.\n\n2. **Completeness**: Cross-reference .ai/rogue_analysis.md — is every C function ported?\n   - Count functions in analysis vs. implemented Rust functions\n   - Flag any missing systems\n\n3. **Fidelity spot-checks** (compare Rust code against C source directly):\n   a. RNG: seed*11109+13849 >> 16 & 0xffff\n   b. Room gen: 3x3 grid, MAXROOMS=9, size randomization\n   c. Monster table: all 26 entries, check 'E'=emu, 'M'=medusa, 'V'=vampire stats\n   d. Combat: swing() = at_lvl - op_arm + wplus, roll_em() dice parsing\n   e. Hunger: HUNGERTIME=1300, state transitions at 300/150/0\n   f. HP regen: 1HP per (21-level) turns, min 3\n   g. Scroll S_TELEP: teleports player to random position\n   h. Potion P_HASTE: doubles speed, stacks cause confusion\n   i. Trap T_ARROW: 1d6 damage\n   j. XP table: e_levels = [10,20,40,80,160,320,640,1300,2600,5200,...]\n\n4. **Browser playability**: Does www/index.html:\n   - Import WASM correctly?\n   - Have keyboard handler for all game commands?\n   - Render 80x24 ASCII grid?\n   - Handle game over state?\n\n5. **QA**: All tests pass (check .ai/qa_results.md and .ai/verify_qa.md)\n\n6. **Missing features**: wizard mode, save/load, scoring, options — all present?\n\nWrite detailed review to .ai/final_review.md.\nWrite status.json: outcome=success if port is complete/faithful/playable, outcome=fail with specific issues."
     ]
 
