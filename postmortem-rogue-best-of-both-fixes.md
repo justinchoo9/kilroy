@@ -38,7 +38,7 @@ It intentionally separates:
 ## Runtime Data Model Definitions (Must Be Explicit Before Coding)
 
 - `run_generation`: monotonic integer incremented on each loop-restart generation of a run; included on liveness events to avoid stale-branch attribution.
-- `attempt_id`: deterministic identifier for a stage attempt, format `node_id:attempt_ordinal`; emitted on attempt lifecycle and heartbeat events.
+- `attempt_id`: deterministic identifier for a stage attempt, format `node_id:attempt_ordinal`, where `attempt_ordinal` is 1-indexed to match attractor retry semantics.
 - `terminal_artifact`: top-level `final.json` at run logs root, schema aligned with `internal/attractor/runtime/final.go`:
   - `timestamp`
   - `status` (`success|fail`)
@@ -47,15 +47,20 @@ It intentionally separates:
   - `failure_reason` (optional)
   - `cxdb_context_id`
   - `cxdb_head_turn_id`
+- Terminal status mapping (run-level, intentionally binary):
+  - stage terminal `success`, `partial_success`, `skipped` -> run `success`
+  - stage terminal `fail`, exhausted `retry` -> run `fail`
 - `cycle_break_threshold`: sourced from graph attribute `loop_restart_signature_limit` (existing), default `3` when unset/invalid.
+  - This graph attribute is runtime-contract behavior today and must be documented as a spec delta.
 
 ## Event Taxonomy Mapping (Bridge, Not Replacement)
 
 Attractor runtime events below are implementation telemetry and must be mapped to spec-level semantics:
 
-- Attractor spec `StageStarted` maps to runtime `stage_attempt_start` (first attempt per stage) and subsequent retry starts.
+- Attractor spec `StageStarted` maps to runtime `stage_attempt_start` (one per attempt, including retries).
 - Attractor spec `StageCompleted` maps to runtime `stage_attempt_end` with success status.
 - Attractor spec `StageFailed`/`StageRetrying` maps to runtime `stage_attempt_end` fail/retry plus retry scheduling events.
+- Mapping cardinality: spec stage events are stage-level; runtime attempt events are attempt-level (one-to-many under retries).
 - Coding-agent-loop events (`TOOL_CALL_START`, `TOOL_CALL_END`, assistant text events) map to attractor liveness/progress events in API backend.
 - Runtime-only events (`stage_heartbeat`, `deterministic_failure_cycle_*`, ingestion decision events) are operational events and require spec-delta documentation.
 
@@ -63,17 +68,20 @@ Accepted liveness event set for watchdog:
 - `stage_attempt_start`
 - `stage_attempt_end`
 - `stage_heartbeat`
-- explicit branch completion markers
-- API-loop progress markers derived from tool/assistant milestones
+- `branch_complete`
+- `api_tool_call_start`
+- `api_tool_call_end`
+- `api_assistant_text_delta`
 
 ## Spec Alignment Guardrails
 
 - Keep `{logs_root}/{node_id}/status.json` authoritative for routing.
 - Do not change DOT condition semantics or retry/fallback routing behavior.
 - Preserve join policy semantics (`wait_all`, `k_of_n`, `first_success`, `quorum`) and error policy semantics (`fail_fast`, `continue`, `ignore`) while run is live.
-- Run-level cancellation precedence rule: cancellation always stops further work regardless of branch `error_policy`; `error_policy` only governs branch-local failure handling before cancellation.
+- Run-level cancellation precedence rule (runtime policy pending spec delta): cancellation always stops further work regardless of branch `error_policy`; `error_policy` only governs branch-local failure handling before cancellation.
 - Resolve attractor status-case inconsistency explicitly: Section 5.2 enum style vs Section 10.3 lowercase outcomes.
   - Engine behavior: parse case-insensitively, normalize internal values to lowercase, emit lowercase.
+  - Backward compatibility: known outcome tokens remain case-insensitive in condition matching so uppercase legacy DOT conditions keep working.
   - Spec delta: codify lowercase as canonical wire/storage form.
 
 ## P0 (Immediate)
@@ -88,6 +96,7 @@ Accepted liveness event set for watchdog:
   - ownership check must pass when ownership fields are present
   - canonical file is never overwritten by lower-precedence source
   - accepted fallback is atomically copied to canonical path with provenance metadata
+  - canonical status writes must be temp-file + atomic rename to avoid partial-read races
   - Done when: deterministic source selection is observable in logs/events.
 - Make watchdog liveness fanout-aware.
   - Done when: no false `stall_watchdog_timeout` while any active branch emits accepted liveness events.
@@ -123,6 +132,7 @@ Accepted liveness event set for watchdog:
   - `StreamError`
   - `ConfigurationError`
   - Done when: terminal classing distinguishes cancel/stall/runtime faults from provider deterministic/transient categories using full mapping.
+  - Existing behavior baseline to preserve: `ContentFilterError` remains deterministic unless an explicit policy override says otherwise.
 - Normalize failure signatures only for breaker decisions.
   - Done when: raw reason remains route-visible; normalized key used only by breaker/telemetry.
 - Enforce pinned model/provider no-failover policy from run config.
@@ -144,6 +154,7 @@ Accepted liveness event set for watchdog:
 - Cancellation.
   - Unit: cancel gate prevents scheduling next stage.
   - Integration: no new attempts after cancel; traversal exits cleanly.
+  - Matrix: includes `error_policy=ignore` to prove cancellation precedence.
 - Deterministic cycle breaker.
   - Unit: signature counting/limit logic.
   - Integration: subgraph breaker triggers at configured limit.
@@ -161,6 +172,7 @@ Accepted liveness event set for watchdog:
 - True-positive watchdog.
   - Unit: no-event path triggers timeout logic.
   - Integration: timeout still fires when top-level and branch liveness are absent.
+  - E2E: detached run with intentionally silent branches times out within configured watchdog bounds.
 
 ## Required Observability
 
@@ -186,11 +198,12 @@ Accepted liveness event set for watchdog:
 ## Implementation Order (Risk-Aware)
 
 - Stage 1: status ingestion hardening + ownership checks.
-- Stage 2: watchdog fanout aggregation + heartbeat lifecycle fixes.
-- Stage 3: cancellation guards + subgraph cycle-break parity.
-- Stage 4: failure taxonomy mapping + no-failover policy enforcement.
-- Stage 5: full test matrix and release gates.
-- Stage 6: spec-delta docs merged to remove implementation/spec drift.
+- Stage 2: draft spec deltas for status/casing/cancel/watchdog/event contracts (before broad behavior rollout).
+- Stage 3: watchdog fanout aggregation + heartbeat lifecycle fixes.
+- Stage 4: cancellation guards + subgraph cycle-break parity.
+- Stage 5: failure taxonomy mapping + no-failover policy enforcement.
+- Stage 6: full test matrix and release gates.
+- Stage 7: finalize and merge spec-delta docs to remove implementation/spec drift.
 
 ## Primary Touchpoints
 
