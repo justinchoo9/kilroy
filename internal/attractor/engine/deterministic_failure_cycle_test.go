@@ -109,3 +109,10 @@ digraph G {
 		t.Fatalf("result.txt: got %q want %q", got, "recovered")
 	}
 }
+
+func TestRunSubgraphUntil_DeterministicFailureCycleBreaksAtLimit(t *testing.T) {
+	err := runDeterministicSubgraphCycleFixture(t, 2)
+	if err == nil || !strings.Contains(err.Error(), "deterministic failure cycle") {
+		t.Fatalf("expected deterministic failure cycle error, got %v", err)
+	}
+}

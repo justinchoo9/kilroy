@@ -74,6 +74,47 @@ func runSubgraphUntil(ctx context.Context, eng *Engine, startNodeID, stopNodeID 
 		eng.Context.ApplyUpdates(out.ContextUpdates)
 		eng.Context.Set("outcome", string(out.Status))
 		eng.Context.Set("preferred_label", out.PreferredLabel)
+		eng.Context.Set("failure_reason", out.FailureReason)
+		failureClass := classifyFailureClass(out)
+		eng.Context.Set("failure_class", failureClass)
+
+		if isFailureLoopRestartOutcome(out) && normalizedFailureClassOrDefault(failureClass) == failureClassDeterministic {
+			sig := restartFailureSignature(node.ID, out, failureClass)
+			if sig != "" {
+				if eng.loopFailureSignatures == nil {
+					eng.loopFailureSignatures = map[string]int{}
+				}
+				eng.loopFailureSignatures[sig]++
+				count := eng.loopFailureSignatures[sig]
+				limit := loopRestartSignatureLimit(eng.Graph)
+				eng.appendProgress(map[string]any{
+					"event":           "subgraph_deterministic_failure_cycle_check",
+					"node_id":         node.ID,
+					"signature":       sig,
+					"signature_count": count,
+					"signature_limit": limit,
+					"failure_class":   failureClass,
+					"failure_reason":  out.FailureReason,
+				})
+				if count >= limit {
+					eng.appendProgress(map[string]any{
+						"event":           "subgraph_deterministic_failure_cycle_breaker",
+						"node_id":         node.ID,
+						"signature":       sig,
+						"signature_count": count,
+						"signature_limit": limit,
+					})
+					return parallelBranchResult{
+						HeadSHA:    headSHA,
+						LastNodeID: lastNode,
+						Outcome:    out,
+						Completed:  completed,
+					}, fmt.Errorf("deterministic failure cycle detected in subgraph: %s", sig)
+				}
+			}
+		} else if out.Status == runtime.StatusSuccess {
+			eng.loopFailureSignatures = nil
+		}
 
 		sha, err := eng.checkpoint(node.ID, out, completed, nodeRetries)
 		if err != nil {
