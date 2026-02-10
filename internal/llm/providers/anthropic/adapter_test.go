@@ -970,14 +970,7 @@ func TestAdapter_PromptCaching_AutoCacheDefaultAndDisable(t *testing.T) {
 			_ = r.Body.Close()
 			_ = json.Unmarshal(b, &gotBody)
 
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{
-  "id": "msg_1",
-  "model": "kimi-for-coding",
-  "content": [{"type":"text","text":"ok"}],
-  "stop_reason": "end_turn",
-  "usage": {"input_tokens": 1, "output_tokens": 1}
-}`))
+			writeAnthropicStreamOK(w, "ok")
 		}))
 		t.Cleanup(srv.Close)
 
@@ -1007,6 +1000,12 @@ func TestAdapter_PromptCaching_AutoCacheDefaultAndDisable(t *testing.T) {
 
 		if gotBeta != "" {
 			t.Fatalf("anthropic-beta: got %q want empty", gotBeta)
+		}
+		if stream, _ := gotBody["stream"].(bool); !stream {
+			t.Fatalf("expected stream=true for kimi, got %#v", gotBody["stream"])
+		}
+		if got := asInt(gotBody["max_tokens"]); got < 16000 {
+			t.Fatalf("expected max_tokens>=16000 for kimi, got %d", got)
 		}
 		if _, ok := gotBody["system"].(string); !ok {
 			t.Fatalf("expected system string when auto_cache defaults off for kimi; got %#v", gotBody["system"])
@@ -1109,4 +1108,165 @@ func TestAdapter_UsageCacheTokens_Mapped(t *testing.T) {
 	if resp.Usage.CacheWriteTokens == nil || *resp.Usage.CacheWriteTokens != 20 {
 		t.Fatalf("cache_write_tokens: %#v", resp.Usage.CacheWriteTokens)
 	}
+}
+
+func TestAdapter_KimiComplete_UsesStreamingTransportAndMinMaxTokens(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		stream, _ := gotBody["stream"].(bool)
+		if !stream || asInt(gotBody["max_tokens"]) < 16000 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"type":"invalid_request_error","message":"stream=true and max_tokens>=16000 are required"}}`))
+			return
+		}
+		writeAnthropicStreamOK(w, "ok")
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{Provider: "kimi", APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	resp, err := a.Complete(ctx, llm.Request{
+		Provider: "kimi",
+		Model:    "kimi-k2.5",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if strings.TrimSpace(resp.Text()) != "ok" {
+		t.Fatalf("response text=%q want %q", resp.Text(), "ok")
+	}
+	if gotBody == nil {
+		t.Fatalf("server did not capture request body")
+	}
+	if stream, _ := gotBody["stream"].(bool); !stream {
+		t.Fatalf("expected stream=true for kimi complete path, got %#v", gotBody["stream"])
+	}
+	if got := asInt(gotBody["max_tokens"]); got < 16000 {
+		t.Fatalf("expected max_tokens>=16000 for kimi complete path, got %d", got)
+	}
+}
+
+func TestAdapter_KimiStream_EnforcesMinMaxTokens(t *testing.T) {
+	tests := []struct {
+		name      string
+		maxTokens *int
+	}{
+		{name: "unset max tokens"},
+		{name: "low max tokens", maxTokens: intPtr(16)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				b, _ := io.ReadAll(r.Body)
+				_ = r.Body.Close()
+				_ = json.Unmarshal(b, &gotBody)
+
+				stream, _ := gotBody["stream"].(bool)
+				if !stream || asInt(gotBody["max_tokens"]) < 16000 {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"error":{"type":"invalid_request_error","message":"stream=true and max_tokens>=16000 are required"}}`))
+					return
+				}
+				writeAnthropicStreamOK(w, "ok")
+			}))
+			t.Cleanup(srv.Close)
+
+			a := &Adapter{Provider: "kimi", APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			st, err := a.Stream(ctx, llm.Request{
+				Provider:  "kimi",
+				Model:     "kimi-k2.5",
+				Messages:  []llm.Message{llm.User("hi")},
+				MaxTokens: tc.maxTokens,
+			})
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			defer st.Close()
+
+			var finish *llm.Response
+			var streamErr error
+			for ev := range st.Events() {
+				if ev.Type == llm.StreamEventFinish && ev.Response != nil {
+					finish = ev.Response
+				}
+				if ev.Type == llm.StreamEventError && ev.Err != nil {
+					streamErr = ev.Err
+				}
+			}
+			if streamErr != nil {
+				t.Fatalf("stream error: %v", streamErr)
+			}
+			if finish == nil || strings.TrimSpace(finish.Text()) != "ok" {
+				t.Fatalf("finish response=%+v want text %q", finish, "ok")
+			}
+			if gotBody == nil {
+				t.Fatalf("server did not capture request body")
+			}
+			if stream, _ := gotBody["stream"].(bool); !stream {
+				t.Fatalf("expected stream=true, got %#v", gotBody["stream"])
+			}
+			if got := asInt(gotBody["max_tokens"]); got < 16000 {
+				t.Fatalf("expected max_tokens>=16000, got %d", got)
+			}
+		})
+	}
+}
+
+func asInt(v any) int {
+	switch x := v.(type) {
+	case int:
+		return x
+	case int32:
+		return int(x)
+	case int64:
+		return int(x)
+	case float64:
+		return int(x)
+	case json.Number:
+		n, _ := x.Int64()
+		return int(n)
+	default:
+		return 0
+	}
+}
+
+func intPtr(v int) *int { return &v }
+
+func writeAnthropicStreamOK(w http.ResponseWriter, text string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	f, _ := w.(http.Flusher)
+	write := func(event string, data string) {
+		_, _ = io.WriteString(w, "event: "+event+"\n")
+		_, _ = io.WriteString(w, "data: "+data+"\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}
+	write("content_block_start", `{"content_block":{"type":"text"}}`)
+	write("content_block_delta", fmt.Sprintf(`{"delta":{"type":"text_delta","text":%q}}`, text))
+	write("content_block_stop", `{}`)
+	write("message_delta", `{"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	write("message_stop", `{}`)
 }

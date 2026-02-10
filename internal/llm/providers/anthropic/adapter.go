@@ -74,6 +74,14 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		// Avoid short client-level timeouts; rely on request context deadlines instead.
 		a.Client = &http.Client{Timeout: 0}
 	}
+	policy := llm.ExecutionPolicy(a.Name())
+	req = llm.ApplyExecutionPolicy(req, policy)
+	if policy.ForceStream {
+		// Kimi Coding has shown request-shape sensitivity on non-stream complete calls,
+		// especially on tool-history continuation turns. Enforce stream transport here so
+		// callers cannot bypass the contract accidentally.
+		return a.completeViaStream(ctx, req)
+	}
 
 	system, messages, err := toAnthropicMessages(req.Messages)
 	if err != nil {
@@ -204,10 +212,48 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	return fromAnthropicResponse(a.Name(), raw, req.Model), nil
 }
 
+func (a *Adapter) completeViaStream(ctx context.Context, req llm.Request) (llm.Response, error) {
+	st, err := a.Stream(ctx, req)
+	if err != nil {
+		return llm.Response{}, err
+	}
+	defer func() { _ = st.Close() }()
+
+	acc := llm.NewStreamAccumulator()
+	var streamErr error
+	sawFinish := false
+	for ev := range st.Events() {
+		acc.Process(ev)
+		switch ev.Type {
+		case llm.StreamEventFinish:
+			sawFinish = true
+			if ev.Response != nil {
+				return *ev.Response, nil
+			}
+		case llm.StreamEventError:
+			if ev.Err != nil {
+				streamErr = ev.Err
+			}
+		}
+	}
+	if streamErr != nil {
+		return llm.Response{}, streamErr
+	}
+	if resp := acc.Response(); resp != nil {
+		return *resp, nil
+	}
+	if sawFinish {
+		return llm.Response{}, llm.NewStreamError(a.Name(), "missing response in finish event")
+	}
+	return llm.Response{}, llm.NewStreamError(a.Name(), "stream ended without finish event")
+}
+
 func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
 	}
+	policy := llm.ExecutionPolicy(a.Name())
+	req = llm.ApplyExecutionPolicy(req, policy)
 	sctx, cancel := context.WithCancel(ctx)
 
 	system, messages, err := toAnthropicMessages(req.Messages)
