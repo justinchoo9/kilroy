@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -512,6 +513,105 @@ func TestAdapter_Stream_ToolUse_DeltaOnly_ValidJSON(t *testing.T) {
 	}
 	if !json.Valid(calls[0].Arguments) {
 		t.Fatalf("finish tool args must be valid JSON: %q", string(calls[0].Arguments))
+	}
+}
+
+func TestAdapter_Stream_ToolUse_OneOffBehaviorMatrix(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name               string
+		sequence           string
+		wantJSONValid      bool
+		wantToolName       string
+		wantArgsContains   string
+		wantParseErrSubstr string
+	}{
+		{
+			name:             "start_input_only_is_valid",
+			sequence:         "start_input_only_valid_json",
+			wantJSONValid:    true,
+			wantToolName:     "shell",
+			wantArgsContains: `"command":"ls demo/rogue/original-rogue"`,
+		},
+		{
+			name:             "delta_only_split_is_valid",
+			sequence:         "delta_only_valid_json",
+			wantJSONValid:    true,
+			wantToolName:     "glob",
+			wantArgsContains: `"pattern":"*.c"`,
+		},
+		{
+			name:             "start_input_null_plus_delta_is_valid",
+			sequence:         "start_input_null_plus_delta_valid_json",
+			wantJSONValid:    true,
+			wantToolName:     "shell",
+			wantArgsContains: `"command":"echo ok"`,
+		},
+		{
+			name:               "start_input_plus_full_delta_is_invalid_duplicate_object",
+			sequence:           "start_input_plus_delta_duplicate",
+			wantJSONValid:      false,
+			wantToolName:       "shell",
+			wantArgsContains:   `}{"command":"rg --files`,
+			wantParseErrSubstr: `invalid character '{' after top-level value`,
+		},
+		{
+			name:               "start_input_plus_continuation_delta_is_invalid",
+			sequence:           "start_input_plus_delta_continuation_invalid_json",
+			wantJSONValid:      false,
+			wantToolName:       "glob",
+			wantArgsContains:   `},"path":"demo/rogue/original-rogue"}`,
+			wantParseErrSubstr: `invalid character ',' after top-level value`,
+		},
+		{
+			name:               "start_input_empty_object_plus_delta_is_invalid",
+			sequence:           "start_input_empty_object_plus_delta_invalid_json",
+			wantJSONValid:      false,
+			wantToolName:       "shell",
+			wantArgsContains:   `{}{"command":"echo hi"}`,
+			wantParseErrSubstr: `invalid character '{' after top-level value`,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			streamEvents := runKimiToolCallSequence(t, tc.sequence)
+			obs := observeSingleToolCall(t, streamEvents)
+			if obs.finish.Finish.Reason != "tool_calls" {
+				t.Fatalf("finish reason: got %q want %q", obs.finish.Finish.Reason, "tool_calls")
+			}
+			if obs.endCall.Name != tc.wantToolName {
+				t.Fatalf("tool name: got %q want %q", obs.endCall.Name, tc.wantToolName)
+			}
+			if tc.wantArgsContains != "" && !strings.Contains(string(obs.endCall.Arguments), tc.wantArgsContains) {
+				t.Fatalf("tool args %q do not contain %q", string(obs.endCall.Arguments), tc.wantArgsContains)
+			}
+
+			gotValid := json.Valid(obs.endCall.Arguments)
+			if gotValid != tc.wantJSONValid {
+				t.Fatalf("json validity mismatch: got %t want %t args=%q", gotValid, tc.wantJSONValid, string(obs.endCall.Arguments))
+			}
+			if !tc.wantJSONValid {
+				var m map[string]any
+				err := json.Unmarshal(obs.endCall.Arguments, &m)
+				if err == nil {
+					t.Fatalf("expected JSON parse error for args=%q", string(obs.endCall.Arguments))
+				}
+				if tc.wantParseErrSubstr != "" && !strings.Contains(err.Error(), tc.wantParseErrSubstr) {
+					t.Fatalf("parse error mismatch: got %q want substring %q", err.Error(), tc.wantParseErrSubstr)
+				}
+				t.Logf("sequence=%s invalid_json_parse_error=%q args=%q", tc.sequence, err.Error(), string(obs.endCall.Arguments))
+				return
+			}
+
+			var args map[string]any
+			if err := json.Unmarshal(obs.endCall.Arguments, &args); err != nil {
+				t.Fatalf("unmarshal tool args: %v", err)
+			}
+			t.Logf("sequence=%s valid_json=true keys=%v args=%q", tc.sequence, mapKeys(args), string(obs.endCall.Arguments))
+		})
 	}
 }
 
@@ -1430,6 +1530,83 @@ type streamFixtureEvent struct {
 	Data     json.RawMessage `json:"data"`
 }
 
+type toolCallObservation struct {
+	startID string
+	endCall llm.ToolCallData
+	finish  *llm.Response
+}
+
+func observeSingleToolCall(t *testing.T, streamEvents []llm.StreamEvent) toolCallObservation {
+	t.Helper()
+
+	startIDs := make([]string, 0, 1)
+	deltaIDs := make([]string, 0, 4)
+	var endCall *llm.ToolCallData
+	var finish *llm.Response
+	for _, ev := range streamEvents {
+		switch ev.Type {
+		case llm.StreamEventError:
+			if ev.Err != nil {
+				t.Fatalf("stream error: %v", ev.Err)
+			}
+		case llm.StreamEventToolCallStart:
+			if ev.ToolCall == nil {
+				t.Fatalf("tool call start missing payload")
+			}
+			startIDs = append(startIDs, ev.ToolCall.ID)
+		case llm.StreamEventToolCallDelta:
+			if ev.ToolCall == nil {
+				t.Fatalf("tool call delta missing payload")
+			}
+			deltaIDs = append(deltaIDs, ev.ToolCall.ID)
+		case llm.StreamEventToolCallEnd:
+			if ev.ToolCall == nil {
+				t.Fatalf("tool call end missing payload")
+			}
+			tc := *ev.ToolCall
+			endCall = &tc
+		case llm.StreamEventFinish:
+			if ev.Response != nil {
+				finish = ev.Response
+			}
+		}
+	}
+
+	if len(startIDs) != 1 {
+		t.Fatalf("expected one tool call start, got %d", len(startIDs))
+	}
+	for i, id := range deltaIDs {
+		if id != startIDs[0] {
+			t.Fatalf("delta[%d] tool_call_id mismatch: got %q want %q", i, id, startIDs[0])
+		}
+	}
+	if endCall == nil {
+		t.Fatalf("expected tool call end event")
+	}
+	if endCall.ID != startIDs[0] {
+		t.Fatalf("tool call end id mismatch: got %q want %q", endCall.ID, startIDs[0])
+	}
+	if finish == nil {
+		t.Fatalf("expected finish response")
+	}
+	calls := finish.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("finish response tool calls: got %d want 1", len(calls))
+	}
+	if calls[0].ID != startIDs[0] {
+		t.Fatalf("finish tool call id mismatch: got %q want %q", calls[0].ID, startIDs[0])
+	}
+	if string(calls[0].Arguments) != string(endCall.Arguments) {
+		t.Fatalf("finish/end tool args mismatch: finish=%q end=%q", string(calls[0].Arguments), string(endCall.Arguments))
+	}
+
+	return toolCallObservation{
+		startID: startIDs[0],
+		endCall: *endCall,
+		finish:  finish,
+	}
+}
+
 func runKimiToolCallSequence(t *testing.T, sequence string) []llm.StreamEvent {
 	t.Helper()
 
@@ -1505,6 +1682,15 @@ func loadStreamFixtureSequence(t *testing.T, sequence string) []streamFixtureEve
 		t.Fatalf("fixture sequence %q not found", sequence)
 	}
 	return out
+}
+
+func mapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func writeAnthropicStreamOK(w http.ResponseWriter, text string) {

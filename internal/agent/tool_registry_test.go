@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -81,6 +82,66 @@ func TestToolRegistry_InvalidArgumentsJSON_IsReturnedToModel(t *testing.T) {
 	}
 	if !strings.Contains(res.Output, "invalid tool arguments JSON") {
 		t.Fatalf("output: %q", res.Output)
+	}
+}
+
+func TestToolRegistry_OneOff_KimiConcatenatedJSON_FailVsSuccess(t *testing.T) {
+	r := NewToolRegistry()
+	if err := r.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{
+			Name: "shell",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"command": map[string]any{"type": "string"},
+				},
+				"required": []string{"command"},
+			},
+		},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			_ = env
+			return "ran: " + fmt.Sprint(args["command"]), nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	tests := []struct {
+		name               string
+		args               json.RawMessage
+		wantErr            bool
+		wantOutputContains string
+	}{
+		{
+			name:               "invalid_concatenated_objects",
+			args:               json.RawMessage(`{"command":"rg --files demo/rogue/original-rogue/*.c"}{"command":"rg --files demo/rogue/original-rogue/*.c"}`),
+			wantErr:            true,
+			wantOutputContains: `invalid character '{' after top-level value`,
+		},
+		{
+			name:               "valid_single_object",
+			args:               json.RawMessage(`{"command":"rg --files demo/rogue/original-rogue/*.c"}`),
+			wantErr:            false,
+			wantOutputContains: `ran: rg --files demo/rogue/original-rogue/*.c`,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			res := r.ExecuteCall(context.Background(), NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
+				ID:        "c1",
+				Name:      "shell",
+				Arguments: tc.args,
+			})
+			if res.IsError != tc.wantErr {
+				t.Fatalf("is_error: got %t want %t output=%q", res.IsError, tc.wantErr, res.Output)
+			}
+			if !strings.Contains(res.Output, tc.wantOutputContains) {
+				t.Fatalf("output mismatch: got %q want substring %q", res.Output, tc.wantOutputContains)
+			}
+		})
 	}
 }
 

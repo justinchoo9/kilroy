@@ -10,7 +10,11 @@ Scope: Investigation only (reproduction + localization), no adapter fix yet.
 - Regression tests:
   - `TestAdapter_Stream_ToolUse_StartInputPlusDelta_NoDuplicateJSON`
   - `TestAdapter_Stream_ToolUse_DeltaOnly_ValidJSON`
+  - `TestAdapter_Stream_ToolUse_OneOffBehaviorMatrix`
   - File: `internal/llm/providers/anthropic/adapter_test.go`
+- Downstream one-off causality test:
+  - `TestToolRegistry_OneOff_KimiConcatenatedJSON_FailVsSuccess`
+  - File: `internal/agent/tool_registry_test.go`
 
 ## Reproduction Command and Results
 
@@ -30,6 +34,29 @@ Focused failure output:
 ```text
 tool call arguments must be valid JSON: "{\"command\":\"rg --files demo/rogue/original-rogue/*.c\"}{\"command\":\"rg --files demo/rogue/original-rogue/*.c\"}"
 ```
+
+## Deeper One-Off Matrix (Fail and Succeed Boundaries)
+
+Command:
+
+```bash
+go test ./internal/llm/providers/anthropic -run 'ToolUse_OneOffBehaviorMatrix|ToolUse_DeltaOnly_ValidJSON' -count=1 -v
+```
+
+Observed matrix:
+
+1. `start_input_only_valid_json` -> valid JSON
+2. `delta_only_valid_json` -> valid JSON
+3. `start_input_null_plus_delta_valid_json` -> valid JSON
+4. `start_input_plus_delta_duplicate` -> invalid JSON (`invalid character '{' after top-level value`)
+5. `start_input_plus_delta_continuation_invalid_json` -> invalid JSON (`invalid character ',' after top-level value`)
+6. `start_input_empty_object_plus_delta_invalid_json` -> invalid JSON (`invalid character '{' after top-level value`)
+
+Key boundary:
+
+- Any non-null `content_block_start.tool_use.input` combined with non-empty `input_json_delta.partial_json` in the same tool call currently corrupts the argument buffer.
+- Delta-only and start-only shapes are healthy.
+- `input: null` + delta is healthy because start input is skipped by current guard (`inAny != nil`).
 
 ## Failing Sequence
 
@@ -56,6 +83,30 @@ In `internal/llm/providers/anthropic/adapter.go` stream handling:
 - On `content_block_stop` and `message_stop`, it forwards this combined buffer as tool arguments.
 
 This creates corruption when both start-input and delta represent complete JSON payloads.
+
+Concretely, the adapter is implementing:
+
+```
+toolArgs = marshal(start.input) + concat(delta.partial_json...)
+```
+
+When `marshal(start.input)` is already a complete JSON value, concatenation produces two top-level values, which is invalid JSON by construction.
+
+## Downstream Causality Proof
+
+Command:
+
+```bash
+go test ./internal/agent -run 'OneOff_KimiConcatenatedJSON_FailVsSuccess' -count=1 -v
+```
+
+Results:
+
+1. Concatenated payload (`{"command":"..."}{"command":"..."}`) fails with:
+   - `invalid tool arguments JSON: invalid character '{' after top-level value`
+2. Single-object payload (`{"command":"..."}`) succeeds and executes normally.
+
+This proves the run-time `invalid tool arguments JSON` failures are a direct downstream consequence of malformed adapter output, not a shell/glob tool bug.
 
 ## Expected Behavior
 
