@@ -52,3 +52,30 @@ digraph G {
 		t.Fatalf("out.Validate() error: %v (out=%+v)", err, out)
 	}
 }
+
+func TestCodergenStatusIngestion_CanonicalStageStatusWins(t *testing.T) {
+	out, source := runStatusIngestionFixture(t, true, true, false)
+	if source != "canonical" {
+		t.Fatalf("source=%q want canonical", source)
+	}
+	if out.Status != runtime.StatusSuccess {
+		t.Fatalf("status=%q want %q", out.Status, runtime.StatusSuccess)
+	}
+}
+
+func TestCodergenStatusIngestion_FallbackOnlyWhenCanonicalMissing(t *testing.T) {
+	out, source := runStatusIngestionFixture(t, false, true, false)
+	if source != "worktree" {
+		t.Fatalf("source=%q want worktree", source)
+	}
+	if out.Status != runtime.StatusFail {
+		t.Fatalf("status=%q want %q", out.Status, runtime.StatusFail)
+	}
+}
+
+func TestCodergenStatusIngestion_InvalidFallbackIsRejected(t *testing.T) {
+	_, source := runStatusIngestionFixture(t, false, false, true)
+	if source != "" {
+		t.Fatalf("source=%q want empty", source)
+	}
+}

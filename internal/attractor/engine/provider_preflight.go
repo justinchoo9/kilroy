@@ -825,7 +825,7 @@ func runProviderCLIPromptProbePreflight(ctx context.Context, provider string, mo
 	// an isolated environment where browser auth tokens are unavailable. When no API
 	// key is set, skip the probe with a warning rather than failing the entire run.
 	// This skip does not apply in test_shim mode where the operator provides a fake executable.
-	if usesCodexCLISemantics(provider, exePath) &&
+	if usesCodexCLISemantics(provider, "") &&
 		strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) == "" &&
 		normalizedCLIProfile(cfg) != "test_shim" {
 		report.addCheck(providerPreflightCheck{

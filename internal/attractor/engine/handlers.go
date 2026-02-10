@@ -156,18 +156,56 @@ func (b *SimulatedCodergenBackend) Run(ctx context.Context, exec *Execution, nod
 
 type CodergenHandler struct{}
 
+type statusSource string
+
+const (
+	statusSourceNone      statusSource = ""
+	statusSourceCanonical statusSource = "canonical"
+	statusSourceWorktree  statusSource = "worktree"
+	statusSourceDotAI     statusSource = "dot_ai"
+)
+
+func copyFirstValidFallbackStatus(stageStatusPath string, fallbackPaths []string) (statusSource, error) {
+	if _, err := os.Stat(stageStatusPath); err == nil {
+		return statusSourceCanonical, nil
+	}
+	for idx, p := range fallbackPaths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		if _, err := runtime.DecodeOutcomeJSON(b); err != nil {
+			continue
+		}
+		if err := runtime.WriteFileAtomic(stageStatusPath, b); err != nil {
+			return statusSourceNone, err
+		}
+		_ = os.Remove(p)
+		if idx == 0 {
+			return statusSourceWorktree, nil
+		}
+		return statusSourceDotAI, nil
+	}
+	return statusSourceNone, nil
+}
+
 func (h *CodergenHandler) Execute(ctx context.Context, exec *Execution, node *model.Node) (runtime.Outcome, error) {
 	stageDir := filepath.Join(exec.LogsRoot, node.ID)
 	stageStatusPath := filepath.Join(stageDir, "status.json")
 	// Many DOT specs instruct the agent to "Write status.json" without specifying a path.
-	// The codergen backends run in the worktree, so treat a worktree-root status.json as a
-	// best-effort status-file contract signal and move/copy it into the stage directory.
-	worktreeStatusPath := ""
+	// The codergen backends run in the worktree, so treat common worktree status paths as a
+	// best-effort status-file contract signal and move/copy the first one found into the
+	// stage directory.
+	worktreeStatusPaths := []string{}
 	if exec != nil && strings.TrimSpace(exec.WorktreeDir) != "" {
-		worktreeStatusPath = filepath.Join(exec.WorktreeDir, "status.json")
-		// Clear any stale files from a prior stage so we don't accidentally attribute them.
-		_ = os.Remove(worktreeStatusPath)
-		_ = os.Remove(filepath.Join(exec.WorktreeDir, ".ai", "status.json"))
+		worktreeStatusPaths = append(worktreeStatusPaths,
+			filepath.Join(exec.WorktreeDir, "status.json"),
+			filepath.Join(exec.WorktreeDir, ".ai", "status.json"),
+		)
+		// Clear stale files from prior stages so we don't accidentally attribute them.
+		for _, statusPath := range worktreeStatusPaths {
+			_ = os.Remove(statusPath)
+		}
 	}
 
 	basePrompt := strings.TrimSpace(node.Prompt())
@@ -224,25 +262,11 @@ func (h *CodergenHandler) Execute(ctx context.Context, exec *Execution, node *mo
 		_ = os.WriteFile(filepath.Join(stageDir, "response.md"), []byte(resp), 0o644)
 	}
 
-	// If the backend/agent wrote a worktree-root status.json, surface it to the engine by
+	// If the backend/agent wrote a worktree status.json, surface it to the engine by
 	// copying it into the authoritative stage directory location.
-	// Also check .ai/status.json since agents often write there when the prompt context
-	// mentions .ai/ paths (e.g., ".ai/verify.md").
-	if worktreeStatusPath != "" {
-		if _, statErr := os.Stat(stageStatusPath); statErr != nil {
-			statusCandidates := []string{
-				worktreeStatusPath,
-				filepath.Join(exec.WorktreeDir, ".ai", "status.json"),
-			}
-			for _, candidate := range statusCandidates {
-				if b, readErr := os.ReadFile(candidate); readErr == nil {
-					if writeErr := os.WriteFile(stageStatusPath, b, 0o644); writeErr != nil {
-						return runtime.Outcome{Status: runtime.StatusFail, FailureReason: writeErr.Error()}, nil
-					}
-					_ = os.Remove(candidate)
-					break
-				}
-			}
+	if len(worktreeStatusPaths) > 0 {
+		if _, err := copyFirstValidFallbackStatus(stageStatusPath, worktreeStatusPaths); err != nil {
+			return runtime.Outcome{Status: runtime.StatusFail, FailureReason: err.Error()}, nil
 		}
 	}
 

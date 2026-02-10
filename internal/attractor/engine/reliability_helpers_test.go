@@ -98,7 +98,7 @@ digraph G {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	_, err := RunWithConfig(ctx, dot, cfg, RunOptions{
+	res, err := RunWithConfig(ctx, dot, cfg, RunOptions{
 		RunID:         "status-ingestion-fixture",
 		LogsRoot:      logsRoot,
 		AllowTestShim: true,
@@ -106,21 +106,26 @@ digraph G {
 	if err != nil && !invalid {
 		t.Fatalf("RunWithConfig(status ingestion fixture): %v", err)
 	}
+	worktreeStatusPath := ""
+	if res != nil && strings.TrimSpace(res.WorktreeDir) != "" {
+		worktreeStatusPath = filepath.Join(res.WorktreeDir, "status.json")
+	}
+	fallbackCopied := (worktree || invalid) && worktreeStatusPath != "" && !fileExists(worktreeStatusPath)
 
 	out, decErr := readFixtureOutcome(filepath.Join(logsRoot, "a", "status.json"))
 	if decErr != nil {
-		return runtime.Outcome{}, "", logsRoot
+		if fallbackCopied {
+			return runtime.Outcome{}, string(statusSourceWorktree), logsRoot
+		}
+		return runtime.Outcome{}, string(statusSourceNone), logsRoot
 	}
 
-	source := ""
+	source := string(statusSourceNone)
 	switch {
-	case out.Status == runtime.StatusSuccess:
-		source = "canonical"
-	case out.Status == runtime.StatusFail:
-		// In fixture scenarios, FAIL means fallback status was authoritative.
-		if worktree || invalid || canonical {
-			source = "worktree"
-		}
+	case canonical && out.Status == runtime.StatusSuccess:
+		source = string(statusSourceCanonical)
+	case fallbackCopied:
+		source = string(statusSourceWorktree)
 	}
 	return out, source, logsRoot
 }
@@ -468,4 +473,12 @@ func (h *deterministicCycleFixtureHandler) Execute(ctx context.Context, exec *Ex
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func fileExists(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
 }
