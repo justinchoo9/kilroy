@@ -275,6 +275,42 @@ start -> expand_spec -> impl_setup
 
 When a detailed spec file already exists in the repo (e.g., `specs/my-spec.md`), skip this node entirely. Just start with `impl_setup`.
 
+#### Toolchain bootstrap for non-default dependencies (DOT + run config)
+
+If the deliverable needs tools that are commonly missing (for example `wasm-pack`, Playwright browsers, Android/iOS SDKs), generate both:
+
+1. **Companion run config bootstrap** via `setup.commands` (installation/prep, idempotent).
+2. **Early DOT readiness gate** via `shape=parallelogram` `tool_command` (verification/fail-fast).
+
+Use this split deliberately:
+- `setup.commands` prepares the environment before the first node executes and is re-run on resume.
+- `check_toolchain` in DOT gives explicit, user-facing failure messages inside the run graph.
+
+Example companion run config fragment:
+
+```yaml
+setup:
+  timeout_ms: 900000
+  commands:
+    - command -v cargo >/dev/null
+    - command -v wasm-pack >/dev/null || cargo install wasm-pack
+    - rustup target list --installed | grep -qx wasm32-unknown-unknown || rustup target add wasm32-unknown-unknown
+```
+
+Example DOT readiness gate:
+
+```dot
+check_toolchain [
+    shape=parallelogram,
+    max_retries=0,
+    tool_command="bash -lc 'set -euo pipefail; command -v cargo >/dev/null || { echo \"missing required tool: cargo\" >&2; exit 1; }; command -v wasm-pack >/dev/null || { echo \"missing required tool: wasm-pack\" >&2; exit 1; }'"
+]
+
+start -> check_toolchain -> impl_setup
+```
+
+If the user explicitly wants a non-mutating environment (no auto-install), keep only the readiness gate and make the failure message include the exact install command.
+
 #### Node pattern: implement then verify
 
 For EVERY implementation unit — including `impl_setup` — generate a PAIR of nodes plus a conditional:
@@ -635,7 +671,8 @@ Custom outcome values work: `outcome=port`, `outcome=skip`, `outcome=needs_fix`.
 18. **Unscoped lint in verify nodes.** Do NOT use `npm run lint`, `ruff check .`, or any project-wide lint command in verify nodes. Scope lint to changed files using `git diff --name-only $base_sha`. Pre-existing errors in unrelated files cause infinite retry loops where the agent burns tokens trying to fix code it didn't write.
 19. **Overly aggressive API preflight timeouts in run config.** When producing or updating a companion run config for real-provider runs, set `preflight.prompt_probes.timeout_ms: 60000` (60s) as the baseline to reduce startup failures from transient provider latency spikes.
 20. **Missing toolchain readiness gates for non-default build dependencies.** If the deliverable needs tools that are often absent (for example `wasm-pack`, Playwright browsers, mobile SDKs), add an early `shape=parallelogram` tool node that checks prerequisites and blocks the pipeline before expensive LLM stages.
-21. **Retrying long backward edges without restart.** When a retry edge jumps back to a much earlier implementation stage, set `loop_restart=true` on that edge so each retry starts with a fresh run directory and avoids stale-context loops.
+21. **Toolchain checks with no bootstrap path (when auto-install is intended).** If the run is expected to self-prepare the environment, companion run config must include idempotent `setup.commands` install/bootstrap steps. A check-only gate without setup bootstrap causes immediate hard failure.
+22. **Retrying long backward edges without restart.** When a retry edge jumps back to a much earlier implementation stage, set `loop_restart=true` on that edge so each retry starts with a fresh run directory and avoids stale-context loops.
 
 ## Notes on Reference Dotfile Conventions
 
