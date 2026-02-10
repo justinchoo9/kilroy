@@ -10,6 +10,7 @@ import (
 
 	"github.com/strongdm/kilroy/internal/attractor/model"
 	"github.com/strongdm/kilroy/internal/attractor/runtime"
+	"github.com/strongdm/kilroy/internal/llm"
 )
 
 type scriptedOutcomeHandler struct {
@@ -183,4 +184,76 @@ func splitLines(s string) []string {
 		lines = append(lines, s[start:])
 	}
 	return lines
+}
+
+type apiErrorBackend struct {
+	err error
+}
+
+func (b *apiErrorBackend) Run(_ context.Context, _ *Execution, _ *model.Node, _ string) (string, *runtime.Outcome, error) {
+	return "", nil, b.err
+}
+
+func TestExecuteNode_APIError_SetsFailureClass(t *testing.T) {
+	cases := []struct {
+		name      string
+		err       error
+		wantClass string
+	}{
+		{
+			name:      "deterministic_400",
+			err:       llm.ErrorFromHTTPStatus("kimi", 400, "model not found", nil, nil),
+			wantClass: failureClassDeterministic,
+		},
+		{
+			name:      "transient_429",
+			err:       llm.ErrorFromHTTPStatus("kimi", 429, "rate limited", nil, nil),
+			wantClass: failureClassTransientInfra,
+		},
+		{
+			name:      "transient_500",
+			err:       llm.ErrorFromHTTPStatus("openai", 500, "internal server error", nil, nil),
+			wantClass: failureClassTransientInfra,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logsRoot := t.TempDir()
+			dot := []byte(`
+digraph G {
+  start [shape=Mdiamond]
+  a [shape=box, llm_provider="kimi", llm_model="kimi-k2.5", prompt="test"]
+  exit [shape=Msquare]
+  start -> a -> exit
+}`)
+			g, _, err := Prepare(dot)
+			if err != nil {
+				t.Fatalf("Prepare: %v", err)
+			}
+			eng := &Engine{
+				Graph:           g,
+				Options:         RunOptions{RunID: "api-err-class", LogsRoot: logsRoot, WorktreeDir: filepath.Join(logsRoot, "wt")},
+				LogsRoot:        logsRoot,
+				WorktreeDir:     filepath.Join(logsRoot, "wt"),
+				Context:         runtime.NewContext(),
+				Registry:        NewDefaultRegistry(),
+				Interviewer:     &AutoApproveInterviewer{},
+				CodergenBackend: &apiErrorBackend{err: tc.err},
+			}
+			node := g.Nodes["a"]
+			if node == nil {
+				t.Fatalf("missing node a")
+			}
+			// Use executeNode (the full engine path) — NOT handler.Execute directly.
+			// This ensures the outcome survives the err != nil check at engine.go:727-728.
+			out, _ := eng.executeNode(context.Background(), node)
+
+			hint := readFailureClassHint(out)
+			got := normalizedFailureClass(hint)
+			if got != tc.wantClass {
+				t.Fatalf("failure_class: got %q want %q (raw hint=%q)", got, tc.wantClass, hint)
+			}
+		})
+	}
 }

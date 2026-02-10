@@ -731,7 +731,10 @@ func (e *Engine) executeNode(ctx context.Context, node *model.Node) (runtime.Out
 		}, node)
 	}()
 	if err != nil {
-		out = runtime.Outcome{Status: runtime.StatusRetry, FailureReason: err.Error()}
+		// Preserve any metadata (failure_class, failure_signature) the handler
+		// attached to the outcome. Only override Status and FailureReason.
+		out.Status = runtime.StatusRetry
+		out.FailureReason = err.Error()
 	}
 
 	// If the handler (or external tool) wrote status.json, treat it as authoritative.

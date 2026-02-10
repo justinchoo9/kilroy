@@ -211,7 +211,13 @@ func (h *CodergenHandler) Execute(ctx context.Context, exec *Execution, node *mo
 	}
 	resp, out, err := backend.Run(ctx, exec, node, promptText)
 	if err != nil {
-		return runtime.Outcome{Status: runtime.StatusRetry, FailureReason: err.Error()}, err
+		fc, sig := classifyAPIError(err)
+		return runtime.Outcome{
+			Status:         runtime.StatusRetry,
+			FailureReason:  err.Error(),
+			Meta:           map[string]any{"failure_class": fc, "failure_signature": sig},
+			ContextUpdates: map[string]any{"failure_class": fc},
+		}, nil
 	}
 	if strings.TrimSpace(resp) != "" {
 		_ = os.WriteFile(filepath.Join(stageDir, "response.md"), []byte(resp), 0o644)
