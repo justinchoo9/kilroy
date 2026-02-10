@@ -162,3 +162,239 @@ digraph G {
 		t.Fatalf("a status: got %q want %q (out=%+v)", out.Status, runtime.StatusSuccess, out)
 	}
 }
+
+func TestRunWithConfig_CLIBackend_StatusContractPath_HandlesNestedCD(t *testing.T) {
+	cleanupStrayEngineArtifacts(t)
+	t.Cleanup(func() { cleanupStrayEngineArtifacts(t) })
+
+	repo := initTestRepo(t)
+	logsRoot := t.TempDir()
+
+	pinned := writePinnedCatalog(t)
+	cxdbSrv := newCXDBTestServer(t)
+
+	cli := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(cli, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+
+[[ -n "${KILROY_STAGE_STATUS_PATH:-}" ]] || { echo "missing KILROY_STAGE_STATUS_PATH" >&2; exit 21; }
+[[ "${KILROY_STAGE_STATUS_PATH}" = /* ]] || { echo "status path must be absolute" >&2; exit 22; }
+
+mkdir -p demo/rogue/rogue-wasm
+cd demo/rogue/rogue-wasm
+mkdir -p "$(dirname "$KILROY_STAGE_STATUS_PATH")"
+cat > "$KILROY_STAGE_STATUS_PATH" <<'JSON'
+{"status":"fail","failure_reason":"nested cd status path write"}
+JSON
+
+echo '{"type":"start"}'
+echo '{"type":"done","text":"ok"}'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &RunConfigFile{Version: 1}
+	cfg.Repo.Path = repo
+	cfg.CXDB.BinaryAddr = cxdbSrv.BinaryAddr()
+	cfg.CXDB.HTTPBaseURL = cxdbSrv.URL()
+	cfg.LLM.CLIProfile = "test_shim"
+	cfg.LLM.Providers = map[string]ProviderConfig{
+		"openai": {Backend: BackendCLI, Executable: cli},
+	}
+	cfg.ModelDB.OpenRouterModelInfoPath = pinned
+	cfg.ModelDB.OpenRouterModelInfoUpdatePolicy = "pinned"
+	cfg.Git.RunBranchPrefix = "attractor/run"
+
+	dot := []byte(`
+digraph G {
+  graph [goal="status contract nested cd"]
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="do the thing"]
+  fix [shape=parallelogram, tool_command="echo fixed > fixed.txt"]
+
+  start -> a
+  a -> fix [condition="outcome=fail"]
+  a -> exit [condition="outcome=success"]
+  fix -> exit
+}
+`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	res, err := RunWithConfig(ctx, dot, cfg, RunOptions{
+		RunID:         "test-status-contract-path-nested-cd",
+		LogsRoot:      logsRoot,
+		AllowTestShim: true,
+	})
+	if err != nil {
+		t.Fatalf("RunWithConfig: %v", err)
+	}
+
+	b, err := os.ReadFile(filepath.Join(res.LogsRoot, "a", "status.json"))
+	if err != nil {
+		t.Fatalf("read a/status.json: %v", err)
+	}
+	out, err := runtime.DecodeOutcomeJSON(b)
+	if err != nil {
+		t.Fatalf("decode a/status.json: %v", err)
+	}
+	if out.Status != runtime.StatusFail {
+		t.Fatalf("a status: got %q want %q (out=%+v)", out.Status, runtime.StatusFail, out)
+	}
+	if !strings.Contains(out.FailureReason, "nested cd status path write") {
+		t.Fatalf("a failure_reason: got %q, want nested cd marker", out.FailureReason)
+	}
+	if got := strings.TrimSpace(runCmdOut(t, repo, "git", "show", res.FinalCommitSHA+":fixed.txt")); got != "fixed" {
+		t.Fatalf("fixed.txt: got %q want %q", got, "fixed")
+	}
+}
+
+func TestRunWithConfig_CLIBackend_StatusContract_ClearsStaleWorktreeStatusBeforeStage(t *testing.T) {
+	cleanupStrayEngineArtifacts(t)
+	t.Cleanup(func() { cleanupStrayEngineArtifacts(t) })
+
+	repo := initTestRepo(t)
+	logsRoot := t.TempDir()
+
+	pinned := writePinnedCatalog(t)
+	cxdbSrv := newCXDBTestServer(t)
+
+	cli := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(cli, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+echo '{"type":"start"}'
+echo '{"type":"done","text":"ok"}'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &RunConfigFile{Version: 1}
+	cfg.Repo.Path = repo
+	cfg.CXDB.BinaryAddr = cxdbSrv.BinaryAddr()
+	cfg.CXDB.HTTPBaseURL = cxdbSrv.URL()
+	cfg.LLM.CLIProfile = "test_shim"
+	cfg.LLM.Providers = map[string]ProviderConfig{
+		"openai": {Backend: BackendCLI, Executable: cli},
+	}
+	cfg.ModelDB.OpenRouterModelInfoPath = pinned
+	cfg.ModelDB.OpenRouterModelInfoUpdatePolicy = "pinned"
+	cfg.Git.RunBranchPrefix = "attractor/run"
+
+	dot := []byte(`
+digraph G {
+  graph [goal="stale status cleanup"]
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+
+  seed [shape=parallelogram, tool_command="printf '{\"status\":\"success\",\"notes\":\"stale\"}' > status.json"]
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="do the thing"]
+  fix [shape=parallelogram, tool_command="echo fixed > fixed.txt"]
+
+  start -> seed -> a
+  a -> fix [condition="outcome=fail"]
+  a -> exit [condition="outcome=success"]
+  fix -> exit
+}
+`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	res, err := RunWithConfig(ctx, dot, cfg, RunOptions{
+		RunID:         "test-status-contract-stale-worktree-status",
+		LogsRoot:      logsRoot,
+		AllowTestShim: true,
+	})
+	if err != nil {
+		t.Fatalf("RunWithConfig: %v", err)
+	}
+
+	b, err := os.ReadFile(filepath.Join(res.LogsRoot, "a", "status.json"))
+	if err != nil {
+		t.Fatalf("read a/status.json: %v", err)
+	}
+	out, err := runtime.DecodeOutcomeJSON(b)
+	if err != nil {
+		t.Fatalf("decode a/status.json: %v", err)
+	}
+	if out.Status != runtime.StatusFail {
+		t.Fatalf("a status: got %q want %q (out=%+v)", out.Status, runtime.StatusFail, out)
+	}
+	if !strings.Contains(out.FailureReason, "missing status.json") {
+		t.Fatalf("a failure_reason: got %q want mention of missing status.json", out.FailureReason)
+	}
+	if got := strings.TrimSpace(runCmdOut(t, repo, "git", "show", res.FinalCommitSHA+":fixed.txt")); got != "fixed" {
+		t.Fatalf("fixed.txt: got %q want %q", got, "fixed")
+	}
+}
+
+func TestRunWithConfig_CLIBackend_StatusContractPromptPreambleWritten(t *testing.T) {
+	cleanupStrayEngineArtifacts(t)
+	t.Cleanup(func() { cleanupStrayEngineArtifacts(t) })
+
+	repo := initTestRepo(t)
+	logsRoot := t.TempDir()
+
+	pinned := writePinnedCatalog(t)
+	cxdbSrv := newCXDBTestServer(t)
+
+	cli := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(cli, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+cat > status.json <<'JSON'
+{"status":"success","notes":"ok"}
+JSON
+echo '{"type":"start"}'
+echo '{"type":"done","text":"ok"}'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &RunConfigFile{Version: 1}
+	cfg.Repo.Path = repo
+	cfg.CXDB.BinaryAddr = cxdbSrv.BinaryAddr()
+	cfg.CXDB.HTTPBaseURL = cxdbSrv.URL()
+	cfg.LLM.CLIProfile = "test_shim"
+	cfg.LLM.Providers = map[string]ProviderConfig{
+		"openai": {Backend: BackendCLI, Executable: cli},
+	}
+	cfg.ModelDB.OpenRouterModelInfoPath = pinned
+	cfg.ModelDB.OpenRouterModelInfoUpdatePolicy = "pinned"
+	cfg.Git.RunBranchPrefix = "attractor/run"
+
+	dot := []byte(`
+digraph G {
+  graph [goal="status contract prompt preamble"]
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="do the thing"]
+  start -> a -> exit
+}
+`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	res, err := RunWithConfig(ctx, dot, cfg, RunOptions{
+		RunID:         "test-status-contract-prompt-preamble",
+		LogsRoot:      logsRoot,
+		AllowTestShim: true,
+	})
+	if err != nil {
+		t.Fatalf("RunWithConfig: %v", err)
+	}
+
+	promptPath := filepath.Join(res.LogsRoot, "a", "prompt.md")
+	b, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("read prompt.md: %v", err)
+	}
+	prompt := string(b)
+	if !strings.Contains(prompt, "Execution status contract") {
+		t.Fatalf("prompt.md missing status contract preamble: %s", promptPath)
+	}
+	if !strings.Contains(prompt, stageStatusPathEnvKey) {
+		t.Fatalf("prompt.md missing env key %s", stageStatusPathEnvKey)
+	}
+	wantPrimary := filepath.Join(res.WorktreeDir, "status.json")
+	if !strings.Contains(prompt, wantPrimary) {
+		t.Fatalf("prompt.md missing absolute worktree status path %q", wantPrimary)
+	}
+}
