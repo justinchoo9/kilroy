@@ -582,7 +582,7 @@ func TestRunWithConfig_PreflightPromptProbe_UsesOnlyAPIProvidersInGraph(t *testi
 		openaiCalls.Add(1)
 		b, _ := io.ReadAll(r.Body)
 		_ = r.Body.Close()
-		if strings.Contains(string(b), preflightPromptProbeText) {
+		if strings.Contains(string(b), preflightPromptProbeText) || strings.Contains(string(b), preflightPromptProbeAgentLoopText) {
 			sawPrompt.Store(true)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -641,6 +641,200 @@ func TestRunWithConfig_PreflightPromptProbe_UsesOnlyAPIProvidersInGraph(t *testi
 	}
 	if !foundOpenAIProbe {
 		t.Fatalf("missing successful provider_prompt_probe check for openai")
+	}
+}
+
+func TestRunWithConfig_PreflightPromptProbe_APIAgentLoopShape_UsesTools(t *testing.T) {
+	t.Setenv("KILROY_PREFLIGHT_PROMPT_PROBES", "on")
+	t.Setenv("KILROY_PREFLIGHT_API_PROMPT_PROBE_TRANSPORTS", "complete")
+
+	repo := initTestRepo(t)
+	catalog := writeCatalogForPreflight(t, `{
+  "data": [
+    {"id": "openai/gpt-5.2"}
+  ]
+}`)
+
+	var openaiCalls atomic.Int32
+	var sawTools atomic.Bool
+	openaiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		openaiCalls.Add(1)
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		raw := map[string]any{}
+		_ = json.Unmarshal(b, &raw)
+		_, hasTools := raw["tools"]
+		if hasTools {
+			sawTools.Store(true)
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"type":"rate_limit_error","message":"tool path overloaded"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "resp_preflight",
+  "model": "gpt-5.2",
+  "output": [{"type": "message", "content": [{"type":"output_text", "text":"OK"}]}],
+  "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(openaiSrv.Close)
+
+	t.Setenv("OPENAI_API_KEY", "k-openai")
+	t.Setenv("OPENAI_BASE_URL", openaiSrv.URL)
+
+	cfg := &RunConfigFile{Version: 1}
+	cfg.Repo.Path = repo
+	cfg.CXDB.BinaryAddr = "127.0.0.1:1"
+	cfg.CXDB.HTTPBaseURL = "http://127.0.0.1:1"
+	cfg.LLM.CLIProfile = "real"
+	cfg.LLM.Providers = map[string]ProviderConfig{
+		"openai": {Backend: BackendAPI},
+	}
+	cfg.ModelDB.OpenRouterModelInfoPath = catalog
+	cfg.ModelDB.OpenRouterModelInfoUpdatePolicy = "pinned"
+	cfg.Git.RunBranchPrefix = "attractor/run"
+
+	dot := singleProviderDot("openai", "gpt-5.2")
+	logsRoot := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := RunWithConfig(ctx, dot, cfg, RunOptions{RunID: "preflight-api-agent-loop-shape", LogsRoot: logsRoot})
+	if err == nil {
+		t.Fatalf("expected preflight failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "preflight: provider openai api prompt probe failed for model gpt-5.2") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := openaiCalls.Load(); got == 0 {
+		t.Fatalf("expected openai preflight request, got %d", got)
+	}
+	if !sawTools.Load() {
+		t.Fatalf("expected agent_loop preflight probe request to include tools")
+	}
+
+	report := mustReadPreflightReport(t, logsRoot)
+	foundFail := false
+	for _, check := range report.Checks {
+		if check.Name != "provider_prompt_probe" || check.Provider != "openai" || check.Status != "fail" {
+			continue
+		}
+		foundFail = true
+		if got, _ := check.Details["mode"].(string); got != "agent_loop" {
+			t.Fatalf("provider_prompt_probe.details.mode=%q want %q", got, "agent_loop")
+		}
+		if got, _ := check.Details["transport"].(string); got != "complete" {
+			t.Fatalf("provider_prompt_probe.details.transport=%q want %q", got, "complete")
+		}
+		break
+	}
+	if !foundFail {
+		t.Fatalf("expected provider_prompt_probe fail check for openai")
+	}
+}
+
+func TestRunWithConfig_PreflightPromptProbe_APIOneShotShape_DoesNotUseTools(t *testing.T) {
+	t.Setenv("KILROY_PREFLIGHT_PROMPT_PROBES", "on")
+	t.Setenv("KILROY_PREFLIGHT_API_PROMPT_PROBE_TRANSPORTS", "complete")
+
+	repo := initTestRepo(t)
+	catalog := writeCatalogForPreflight(t, `{
+  "data": [
+    {"id": "openai/gpt-5.2"}
+  ]
+}`)
+
+	var openaiCalls atomic.Int32
+	var sawTools atomic.Bool
+	openaiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		openaiCalls.Add(1)
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		raw := map[string]any{}
+		_ = json.Unmarshal(b, &raw)
+		_, hasTools := raw["tools"]
+		if hasTools {
+			sawTools.Store(true)
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"type":"rate_limit_error","message":"tool path overloaded"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "resp_preflight",
+  "model": "gpt-5.2",
+  "output": [{"type": "message", "content": [{"type":"output_text", "text":"OK"}]}],
+  "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(openaiSrv.Close)
+
+	t.Setenv("OPENAI_API_KEY", "k-openai")
+	t.Setenv("OPENAI_BASE_URL", openaiSrv.URL)
+
+	cfg := &RunConfigFile{Version: 1}
+	cfg.Repo.Path = repo
+	cfg.CXDB.BinaryAddr = "127.0.0.1:1"
+	cfg.CXDB.HTTPBaseURL = "http://127.0.0.1:1"
+	cfg.LLM.CLIProfile = "real"
+	cfg.LLM.Providers = map[string]ProviderConfig{
+		"openai": {Backend: BackendAPI},
+	}
+	cfg.ModelDB.OpenRouterModelInfoPath = catalog
+	cfg.ModelDB.OpenRouterModelInfoUpdatePolicy = "pinned"
+	cfg.Git.RunBranchPrefix = "attractor/run"
+
+	dot := []byte(`
+digraph G {
+  graph [goal="test"]
+  start [shape=Mdiamond]
+  a [shape=box, llm_provider="openai", llm_model="gpt-5.2", codergen_mode="one_shot", prompt="x"]
+  exit [shape=Msquare]
+  start -> a -> exit
+}
+`)
+	logsRoot := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := RunWithConfig(ctx, dot, cfg, RunOptions{RunID: "preflight-api-oneshot-shape", LogsRoot: logsRoot})
+	if err == nil {
+		t.Fatalf("expected downstream cxdb error, got nil")
+	}
+	if strings.Contains(err.Error(), "preflight:") {
+		t.Fatalf("expected preflight success for one_shot probe, got %v", err)
+	}
+	if got := openaiCalls.Load(); got == 0 {
+		t.Fatalf("expected openai preflight request, got %d", got)
+	}
+	if sawTools.Load() {
+		t.Fatalf("expected one_shot preflight probe request to avoid tools")
+	}
+
+	report := mustReadPreflightReport(t, logsRoot)
+	foundPass := false
+	for _, check := range report.Checks {
+		if check.Name != "provider_prompt_probe" || check.Provider != "openai" || check.Status != "pass" {
+			continue
+		}
+		foundPass = true
+		if got, _ := check.Details["mode"].(string); got != "one_shot" {
+			t.Fatalf("provider_prompt_probe.details.mode=%q want %q", got, "one_shot")
+		}
+		if got, _ := check.Details["transport"].(string); got != "complete" {
+			t.Fatalf("provider_prompt_probe.details.transport=%q want %q", got, "complete")
+		}
+		break
+	}
+	if !foundPass {
+		t.Fatalf("expected provider_prompt_probe pass check for openai")
 	}
 }
 
@@ -776,7 +970,8 @@ func TestRunWithConfig_PreflightPromptProbe_AllProvidersWhenGraphUsesAll(t *test
 	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		_ = r.Body.Close()
-		if !strings.Contains(string(b), preflightPromptProbeText) {
+		if !strings.Contains(string(b), preflightPromptProbeText) &&
+			!strings.Contains(string(b), preflightPromptProbeAgentLoopText) {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":"missing preflight prompt probe text"}`))
 			return
@@ -849,8 +1044,8 @@ func TestRunWithConfig_PreflightPromptProbe_AllProvidersWhenGraphUsesAll(t *test
 		"kimi": {
 			Backend: BackendAPI,
 			API: ProviderAPIConfig{
-				BaseURL:       apiSrv.URL + "/coding",
-				APIKeyEnv:     "KIMI_API_KEY",
+				BaseURL:   apiSrv.URL + "/coding",
+				APIKeyEnv: "KIMI_API_KEY",
 			},
 		},
 		"zai": {

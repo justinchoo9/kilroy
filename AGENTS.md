@@ -46,6 +46,10 @@ Runs live under `~/.local/state/kilroy/attractor/runs/<run_id>/`. Key files:
 - `progress.ndjson` — full event log (stage starts/ends, edge selections, LLM retries).
 - `manifest.json` — run metadata (goal, graph, repo, base SHA).
 
+## PR Review Process
+
+For PRs we want to accept: check out the PR branch into a worktree, review, add fix-up commits, then non-squash merge — this preserves contributor credit while maintaining code quality.
+
 ## Production Authorization Rule (Strict)
 
 NEVER start a production run except precisely as the user requested, and only after an explicit user request for that production run. Production runs are expensive.

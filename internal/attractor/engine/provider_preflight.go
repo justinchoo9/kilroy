@@ -19,10 +19,15 @@ import (
 )
 
 const (
-	preflightStatusPass      = "pass"
-	preflightStatusWarn      = "warn"
-	preflightStatusFail      = "fail"
-	preflightPromptProbeText = "This is a test. Reply with just 'OK'."
+	preflightStatusPass                 = "pass"
+	preflightStatusWarn                 = "warn"
+	preflightStatusFail                 = "fail"
+	preflightPromptProbeText            = "This is a test. Reply with just 'OK'."
+	preflightPromptProbeAgentLoopText   = "Preflight tool-path probe. Create a compact 10-step implementation checklist covering architecture, files, tests, and rollout. Reply with exactly OK."
+	preflightPromptProbeAgentLoopSystem = "You are Kilroy preflight probe. This request validates tool-enabled runtime compatibility for agent-loop mode."
+
+	preflightAPIPromptProbeTransportComplete = "complete"
+	preflightAPIPromptProbeTransportStream   = "stream"
 
 	defaultPreflightAPIPromptProbeTimeout   = 30 * time.Second
 	defaultPreflightAPIPromptProbeRetries   = 2
@@ -54,6 +59,14 @@ type providerPreflightSummary struct {
 	Pass int `json:"pass"`
 	Warn int `json:"warn"`
 	Fail int `json:"fail"`
+}
+
+type preflightAPIPromptProbeTarget struct {
+	Provider  string
+	Model     string
+	Mode      string
+	Transport string
+	Request   llm.Request
 }
 
 func runProviderCLIPreflight(ctx context.Context, g *model.Graph, runtimes map[string]ProviderRuntime, cfg *RunConfigFile, opts RunOptions) (*providerPreflightReport, error) {
@@ -173,42 +186,58 @@ func runProviderAPIPreflight(ctx context.Context, g *model.Graph, runtimes map[s
 			return fmt.Errorf("preflight: provider %s api adapter is not available", provider)
 		}
 
-		models := usedAPIModelsForProvider(g, runtimes, provider, opts)
-		if len(models) == 0 {
+		targets, targetErr := usedAPIPromptProbeTargetsForProvider(g, runtimes, provider, opts)
+		if targetErr != nil {
+			report.addCheck(providerPreflightCheck{
+				Name:     "provider_prompt_probe",
+				Provider: provider,
+				Status:   preflightStatusFail,
+				Message:  fmt.Sprintf("unable to build prompt probe targets: %v", targetErr),
+				Details: map[string]any{
+					"backend": "api",
+				},
+			})
+			return fmt.Errorf("preflight: provider %s unable to build prompt probe targets: %w", provider, targetErr)
+		}
+		if len(targets) == 0 {
 			report.addCheck(providerPreflightCheck{
 				Name:     "provider_prompt_probe",
 				Provider: provider,
 				Status:   preflightStatusPass,
-				Message:  "no models used by graph for api provider",
+				Message:  "no prompt probe targets used by graph for api provider",
 				Details: map[string]any{
 					"backend": "api",
 				},
 			})
 			continue
 		}
-		for _, modelID := range models {
-			responseText, probeErr := runProviderAPIPromptProbe(ctx, client, provider, modelID)
+		for _, target := range targets {
+			responseText, probeErr := runProviderAPIPromptProbeTarget(ctx, client, target)
 			if probeErr != nil {
 				report.addCheck(providerPreflightCheck{
 					Name:     "provider_prompt_probe",
 					Provider: provider,
 					Status:   preflightStatusFail,
-					Message:  fmt.Sprintf("prompt probe failed for model %s: %v", modelID, probeErr),
+					Message:  fmt.Sprintf("prompt probe failed for model %s (mode=%s transport=%s): %v", target.Model, target.Mode, target.Transport, probeErr),
 					Details: map[string]any{
-						"backend": "api",
-						"model":   modelID,
+						"backend":   "api",
+						"model":     target.Model,
+						"mode":      target.Mode,
+						"transport": target.Transport,
 					},
 				})
-				return fmt.Errorf("preflight: provider %s api prompt probe failed for model %s: %w", provider, modelID, probeErr)
+				return fmt.Errorf("preflight: provider %s api prompt probe failed for model %s (mode=%s transport=%s): %w", provider, target.Model, target.Mode, target.Transport, probeErr)
 			}
 			report.addCheck(providerPreflightCheck{
 				Name:     "provider_prompt_probe",
 				Provider: provider,
 				Status:   preflightStatusPass,
-				Message:  fmt.Sprintf("prompt probe succeeded for model %s", modelID),
+				Message:  fmt.Sprintf("prompt probe succeeded for model %s (mode=%s transport=%s)", target.Model, target.Mode, target.Transport),
 				Details: map[string]any{
 					"backend":          "api",
-					"model":            modelID,
+					"model":            target.Model,
+					"mode":             target.Mode,
+					"transport":        target.Transport,
 					"response_preview": truncate(strings.TrimSpace(responseText), 64),
 				},
 			})
@@ -218,8 +247,27 @@ func runProviderAPIPreflight(ctx context.Context, g *model.Graph, runtimes map[s
 }
 
 func runProviderAPIPromptProbe(ctx context.Context, client *llm.Client, provider string, modelID string) (string, error) {
+	maxTokens := 16
+	target := preflightAPIPromptProbeTarget{
+		Provider:  provider,
+		Model:     modelID,
+		Mode:      "one_shot",
+		Transport: preflightAPIPromptProbeTransportComplete,
+		Request: llm.Request{
+			Provider: provider,
+			Model:    modelID,
+			Messages: []llm.Message{
+				llm.User(preflightPromptProbeText),
+			},
+			MaxTokens: &maxTokens,
+		},
+	}
+	return runProviderAPIPromptProbeTarget(ctx, client, target)
+}
+
+func runProviderAPIPromptProbeTarget(ctx context.Context, client *llm.Client, target preflightAPIPromptProbeTarget) (string, error) {
 	policy := preflightAPIPromptProbePolicyFromEnv()
-	return runProviderAPIPromptProbeWithPolicy(ctx, client, provider, modelID, policy)
+	return runProviderAPIPromptProbeTargetWithPolicy(ctx, client, target, policy)
 }
 
 type preflightAPIPromptProbePolicy struct {
@@ -254,9 +302,15 @@ func preflightAPIPromptProbePolicyFromEnv() preflightAPIPromptProbePolicy {
 	return p
 }
 
-func runProviderAPIPromptProbeWithPolicy(ctx context.Context, client *llm.Client, provider string, modelID string, policy preflightAPIPromptProbePolicy) (string, error) {
+func runProviderAPIPromptProbeTargetWithPolicy(ctx context.Context, client *llm.Client, target preflightAPIPromptProbeTarget, policy preflightAPIPromptProbePolicy) (string, error) {
 	if client == nil {
 		return "", fmt.Errorf("api client is nil")
+	}
+	if strings.TrimSpace(target.Provider) == "" {
+		return "", fmt.Errorf("probe target provider is empty")
+	}
+	if strings.TrimSpace(target.Model) == "" {
+		return "", fmt.Errorf("probe target model is empty")
 	}
 	if policy.Timeout <= 0 {
 		policy.Timeout = defaultPreflightAPIPromptProbeTimeout
@@ -281,18 +335,20 @@ func runProviderAPIPromptProbeWithPolicy(ctx context.Context, client *llm.Client
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
+		if target.Request.MaxTokens == nil {
+			target.Request.MaxTokens = &maxTokens
+		}
+		if strings.TrimSpace(target.Request.Provider) == "" {
+			target.Request.Provider = target.Provider
+		}
+		if strings.TrimSpace(target.Request.Model) == "" {
+			target.Request.Model = target.Model
+		}
 		probeCtx, cancel := context.WithTimeout(ctx, policy.Timeout)
-		resp, err := client.Complete(probeCtx, llm.Request{
-			Provider: provider,
-			Model:    modelID,
-			Messages: []llm.Message{
-				llm.User(preflightPromptProbeText),
-			},
-			MaxTokens: &maxTokens,
-		})
+		responseText, err := runProviderAPIPromptProbeAttempt(probeCtx, client, target)
 		cancel()
 		if err == nil {
-			return strings.TrimSpace(resp.Text()), nil
+			return strings.TrimSpace(responseText), nil
 		}
 		lastErr = err
 		if attempt == attempts || !shouldRetryPreflightAPIPromptProbe(err) {
@@ -310,6 +366,53 @@ func runProviderAPIPromptProbeWithPolicy(ctx context.Context, client *llm.Client
 		return "", lastErr
 	}
 	return "", fmt.Errorf("api prompt probe failed")
+}
+
+func runProviderAPIPromptProbeAttempt(ctx context.Context, client *llm.Client, target preflightAPIPromptProbeTarget) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(target.Transport)) {
+	case "", preflightAPIPromptProbeTransportComplete:
+		resp, err := client.Complete(ctx, target.Request)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(resp.Text()), nil
+	case preflightAPIPromptProbeTransportStream:
+		stream, err := client.Stream(ctx, target.Request)
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = stream.Close() }()
+
+		var text strings.Builder
+		for {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case ev, ok := <-stream.Events():
+				if !ok {
+					return "", fmt.Errorf("stream probe ended without finish event")
+				}
+				switch ev.Type {
+				case llm.StreamEventTextDelta:
+					text.WriteString(ev.Delta)
+				case llm.StreamEventError:
+					if ev.Err != nil {
+						return "", ev.Err
+					}
+					return "", fmt.Errorf("stream probe returned error event")
+				case llm.StreamEventFinish:
+					if ev.Response != nil {
+						if t := strings.TrimSpace(ev.Response.Text()); t != "" {
+							return t, nil
+						}
+					}
+					return strings.TrimSpace(text.String()), nil
+				}
+			}
+		}
+	default:
+		return "", fmt.Errorf("unsupported prompt probe transport %q", target.Transport)
+	}
 }
 
 func preflightAPIPromptProbeBackoff(policy preflightAPIPromptProbePolicy, retryAttempt int) time.Duration {
@@ -755,6 +858,165 @@ func usedCLIModelsForProvider(g *model.Graph, runtimes map[string]ProviderRuntim
 
 func usedAPIModelsForProvider(g *model.Graph, runtimes map[string]ProviderRuntime, provider string, opts RunOptions) []string {
 	return usedModelsForProviderBackend(g, runtimes, provider, BackendAPI, opts)
+}
+
+func usedAPIPromptProbeTargetsForProvider(g *model.Graph, runtimes map[string]ProviderRuntime, provider string, opts RunOptions) ([]preflightAPIPromptProbeTarget, error) {
+	provider = normalizeProviderKey(provider)
+	if provider == "" || g == nil {
+		return nil, nil
+	}
+	transports := configuredAPIPromptProbeTransports()
+	if len(transports) == 0 {
+		transports = []string{preflightAPIPromptProbeTransportComplete}
+	}
+	forcedModel, forced := forceModelForProvider(opts.ForceModels, provider)
+
+	seen := map[string]bool{}
+	targets := []preflightAPIPromptProbeTarget{}
+	for _, n := range g.Nodes {
+		if n == nil || n.Shape() != "box" {
+			continue
+		}
+		nodeProvider := normalizeProviderKey(n.Attr("llm_provider", ""))
+		if nodeProvider == "" || nodeProvider != provider {
+			continue
+		}
+		rt, ok := runtimes[nodeProvider]
+		if !ok || rt.Backend != BackendAPI {
+			continue
+		}
+
+		modelID := modelIDForNode(n)
+		if forced {
+			modelID = forcedModel
+		}
+		if modelID == "" {
+			continue
+		}
+
+		mode := strings.ToLower(strings.TrimSpace(n.Attr("codergen_mode", "")))
+		if mode == "" {
+			mode = "agent_loop"
+		}
+		if mode != "one_shot" && mode != "agent_loop" {
+			return nil, fmt.Errorf("invalid codergen_mode: %q (want one_shot|agent_loop)", mode)
+		}
+		reasoning := strings.TrimSpace(n.Attr("reasoning_effort", ""))
+		req, err := preflightAPIPromptProbeRequest(provider, modelID, mode, reasoning, runtimes)
+		if err != nil {
+			return nil, err
+		}
+		for _, transport := range transports {
+			key := strings.Join([]string{
+				modelID,
+				mode,
+				transport,
+				reasoning,
+			}, "|")
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			targets = append(targets, preflightAPIPromptProbeTarget{
+				Provider:  provider,
+				Model:     modelID,
+				Mode:      mode,
+				Transport: transport,
+				Request:   req,
+			})
+		}
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		a, b := targets[i], targets[j]
+		if a.Model != b.Model {
+			return a.Model < b.Model
+		}
+		if a.Mode != b.Mode {
+			return a.Mode < b.Mode
+		}
+		return a.Transport < b.Transport
+	})
+	return targets, nil
+}
+
+func preflightAPIPromptProbeRequest(provider string, modelID string, mode string, reasoning string, runtimes map[string]ProviderRuntime) (llm.Request, error) {
+	maxTokens := 16
+	req := llm.Request{
+		Provider:  provider,
+		Model:     modelID,
+		MaxTokens: &maxTokens,
+	}
+	if strings.TrimSpace(reasoning) != "" {
+		v := strings.TrimSpace(reasoning)
+		req.ReasoningEffort = &v
+	}
+	switch mode {
+	case "one_shot":
+		req.Messages = []llm.Message{llm.User(preflightPromptProbeText)}
+		return req, nil
+	case "agent_loop":
+		toolDefs, err := preflightAPIPromptProbeToolDefinitions(provider, modelID, runtimes)
+		if err != nil {
+			return llm.Request{}, err
+		}
+		req.Messages = []llm.Message{
+			llm.System(preflightPromptProbeAgentLoopSystem),
+			llm.User(preflightPromptProbeAgentLoopText),
+		}
+		req.Tools = toolDefs
+		return req, nil
+	default:
+		return llm.Request{}, fmt.Errorf("invalid codergen_mode: %q (want one_shot|agent_loop)", mode)
+	}
+}
+
+func preflightAPIPromptProbeToolDefinitions(provider string, modelID string, runtimes map[string]ProviderRuntime) ([]llm.ToolDefinition, error) {
+	provider = normalizeProviderKey(provider)
+	if provider == "" {
+		return nil, fmt.Errorf("provider is empty")
+	}
+	rt, ok := runtimes[provider]
+	if !ok {
+		return nil, fmt.Errorf("provider %s runtime definition missing", provider)
+	}
+	profile, err := profileForRuntimeProvider(rt, modelID)
+	if err != nil {
+		return nil, err
+	}
+	return profile.ToolDefinitions(), nil
+}
+
+func configuredAPIPromptProbeTransports() []string {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv("KILROY_PREFLIGHT_API_PROMPT_PROBE_TRANSPORTS")))
+	if raw == "" {
+		return []string{preflightAPIPromptProbeTransportComplete}
+	}
+	seen := map[string]bool{}
+	order := []string{}
+	appendTransport := func(v string) {
+		v = strings.ToLower(strings.TrimSpace(v))
+		switch v {
+		case "complete", "nonstream", "non-stream":
+			if !seen[preflightAPIPromptProbeTransportComplete] {
+				seen[preflightAPIPromptProbeTransportComplete] = true
+				order = append(order, preflightAPIPromptProbeTransportComplete)
+			}
+		case "stream":
+			if !seen[preflightAPIPromptProbeTransportStream] {
+				seen[preflightAPIPromptProbeTransportStream] = true
+				order = append(order, preflightAPIPromptProbeTransportStream)
+			}
+		}
+	}
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '|' || r == ' ' || r == '\t' || r == '\n'
+	}) {
+		appendTransport(part)
+	}
+	if len(order) == 0 {
+		return []string{preflightAPIPromptProbeTransportComplete}
+	}
+	return order
 }
 
 func usedModelsForProviderBackend(g *model.Graph, runtimes map[string]ProviderRuntime, provider string, backend BackendKind, opts RunOptions) []string {
