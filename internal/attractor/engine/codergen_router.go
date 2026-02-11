@@ -501,13 +501,19 @@ func failoverOrderFromRuntime(primary string, runtimes map[string]ProviderRuntim
 func failoverOrder(primary string) []string {
 	switch normalizeProviderKey(primary) {
 	case "openai":
-		return []string{"anthropic", "google"}
+		return []string{"google"}
 	case "anthropic":
-		return []string{"openai", "google"}
+		return []string{"google"}
 	case "google":
-		return []string{"openai", "anthropic"}
+		return []string{"kimi"}
+	case "kimi":
+		return []string{"zai"}
+	case "zai":
+		return []string{"cerebras"}
+	case "cerebras":
+		return []string{"zai"}
 	default:
-		return []string{"openai", "anthropic", "google"}
+		return nil
 	}
 }
 
@@ -563,6 +569,9 @@ func pickFailoverModel(provider string, catalog *modeldb.Catalog) string {
 			}
 		}
 		return "gpt-5.2-codex"
+	case "kimi":
+		// Keep failover to Kimi pinned to the known stable coding model.
+		return "kimi-k2.5"
 	case "anthropic":
 		best := ""
 		for _, id := range modelIDsForProvider(catalog, "anthropic") {
@@ -590,6 +599,9 @@ func pickFailoverModel(provider string, catalog *modeldb.Catalog) string {
 			}
 		}
 		return providerModelIDFromCatalogKey("google", best)
+	case "cerebras":
+		// Pin to Cerebras-hosted GLM-4.7 model ID.
+		return "zai-glm-4.7"
 	default:
 		return ""
 	}

@@ -18,7 +18,7 @@ var builtinSpecs = map[string]Spec{
 			HelpProbeArgs:      []string{"exec", "--help"},
 			CapabilityAll:      []string{"--json", "--sandbox"},
 		},
-		Failover: []string{"anthropic", "google"},
+		Failover: []string{"google"},
 	},
 	"anthropic": {
 		Key: "anthropic",
@@ -37,7 +37,7 @@ var builtinSpecs = map[string]Spec{
 			HelpProbeArgs:      []string{"--help"},
 			CapabilityAll:      []string{"--output-format", "stream-json", "--verbose"},
 		},
-		Failover: []string{"openai", "google"},
+		Failover: []string{"google"},
 	},
 	"google": {
 		Key:     "google",
@@ -58,7 +58,7 @@ var builtinSpecs = map[string]Spec{
 			CapabilityAll:      []string{"--output-format"},
 			CapabilityAnyOf:    [][]string{{"--yolo", "--approval-mode"}},
 		},
-		Failover: []string{"openai", "anthropic"},
+		Failover: []string{"kimi"},
 	},
 	"kimi": {
 		Key:     "kimi",
@@ -71,7 +71,7 @@ var builtinSpecs = map[string]Spec{
 			ProviderOptionsKey: "anthropic",
 			ProfileFamily:      "openai",
 		},
-		Failover: []string{"openai", "zai"},
+		Failover: []string{"zai"},
 	},
 	"zai": {
 		Key:     "zai",
@@ -84,7 +84,7 @@ var builtinSpecs = map[string]Spec{
 			ProviderOptionsKey: "zai",
 			ProfileFamily:      "openai",
 		},
-		Failover: []string{"openai", "kimi"},
+		Failover: []string{"cerebras"},
 	},
 	"cerebras": {
 		Key:     "cerebras",
@@ -97,7 +97,7 @@ var builtinSpecs = map[string]Spec{
 			ProviderOptionsKey: "cerebras",
 			ProfileFamily:      "openai",
 		},
-		Failover: []string{"openai", "zai"},
+		Failover: []string{"zai"},
 	},
 }
 
