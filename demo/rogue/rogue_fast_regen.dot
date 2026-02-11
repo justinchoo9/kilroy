@@ -3,18 +3,18 @@ digraph rogue_fast_regen {
         goal="Port the classic Rogue 5.4.4 game from C to Rust/WASM, playable in a browser via a single HTML page with classic ASCII terminal rendering — exact mechanical port of all game systems, compiled to WebAssembly and served from demo/rogue/rogue-wasm/www/index.html",
         rankdir=LR,
         default_max_retry=3,
-        retry_target="impl_integration",
-        fallback_retry_target="impl_scaffold",
+        retry_target="impl_integration_loop",
+        fallback_retry_target="impl_wasm_frontend",
         default_command_timeout_ms=300000,
         max_command_timeout_ms=1800000,
         provenance_version="1",
         provenance_file_1="path=demo/rogue/original-rogue;git_sha=9673c3a4",
         provenance_file_2="path=demo/rogue/rogue_fast.dot;git_sha=9673c3a4",
         model_stylesheet="
-            * { llm_model: glm-4.7; llm_provider: zai; reasoning_effort: high; }
-            .hard { llm_model: glm-4.7; llm_provider: zai; reasoning_effort: high; }
-            .verify { llm_model: glm-4.7; llm_provider: zai; reasoning_effort: high; }
-            .review { llm_model: glm-4.7; llm_provider: zai; reasoning_effort: high; }
+            * { llm_model: zai-glm-4.7; llm_provider: cerebras; }
+            .hard { llm_model: zai-glm-4.7; llm_provider: cerebras; }
+            .verify { llm_model: zai-glm-4.7; llm_provider: cerebras; }
+            .review { llm_model: zai-glm-4.7; llm_provider: cerebras; }
         "
     ]
 
@@ -125,109 +125,235 @@ digraph rogue_fast_regen {
     check_dungeon [shape=diamond, label="Dungeon OK?"]
 
     // =========================================================================
-    // Phase 6: Combat & items
+    // Phase 6A: Combat core
     // =========================================================================
 
-    impl_combat_items [
+    impl_combat_core [
         shape=box,
         class="hard",
-        max_agent_turns=60,
+        max_agent_turns=42,
         max_retries=2,
-        prompt="Goal: $goal\n\nPort the combat and item systems from C to Rust.\n\nRead C source:\n- demo/rogue/original-rogue/fight.c (686 lines), weapons.c (288L), armor.c (89L)\n- demo/rogue/original-rogue/potions.c (375L), scrolls.c (329L), rings.c (204L), sticks.c (431L), things.c (713L)\n- demo/rogue/original-rogue/rogue.h\n\nRead Rust project:\n- demo/rogue/rogue-wasm/src/types.rs, src/game.rs, src/rng.rs, src/dungeon.rs\n- .ai/rogue_architecture.md\n\nImplement TWO files:\n\n**src/combat.rs** — exact ports of:\n- fight() — full melee resolution: to-hit roll, damage, special monster attacks\n- attack() — player attacks monster at position\n- hit_monster() — resolve hit at grid position\n- swing() — to-hit roll formula: at_lvl - op_arm + wplus\n- roll_em() — dice parser and roller (\"2d6+3\" format from damage strings)\n- hit() / miss() — combat message formatting\n- bounce() / fire_bolt() — bolt projectile physics for wand bolts (fire, cold, lightning)\n- killed() — monster death: award XP, drop items, check_level\n- thunk() — thrown weapon impact messages\n- save_throw() — saving throw: d20 vs (10 - level/2)\n- check_level() / raise_level() — XP threshold table and level-up\n- is_magic() — check if item is magical\n\n**src/items.rs** — exact ports of:\n- Static data tables with EXACT probability weights from things.c:\n  pot_info[14] (confuse, LSD, poison, strength, see-invisible, healing, monster-detect, magic-detect, raise, extra-healing, haste, restore, blindness, levitation)\n  scr_info[18] (confuse, map, hold, sleep, armor, id-potion, id-scroll, id-weapon, id-armor, id-ring, scare, food-detect, teleport, enchant, create-monster, remove-curse, aggravate, protect)\n  ring_info[14], ws_info[14], weap_info[9], arm_info[8], things[7]\n- new_thing() / pick_one() — weighted random item generation\n- inv_name() / nameit() / choose_str() / vowelstr() — item name formatting\n- do_pot() — all 14 potion effects\n- quaff() — drink potion handler\n- read_scroll() — all 18 scroll effects\n- ring_on() / ring_off() / ring_eat() / ring_num() — ring equip/unequip/effects\n- do_zap() / fix_stick() — wand/staff activation and charge management\n- missile() / do_motion() / fall() — thrown weapon trajectory\n- drop() / dropcheck() — drop item from inventory\n- eat() — food consumption and hunger reset\n- wear() / take_off() — armor equip/unequip\n- wield() — weapon equip\n- current() — describe currently equipped items\n- whatis() / identify() / call() / call_it() — item identification system\n- init_weapon() — weapon stat initialization\n- add_pack() / pack_room() / leave_pack() / inventory() / pick_up() — full pack management\n- money() / set_know() / set_order() / pick_color() / charge_str() / num()\n\nUnit tests (at least 3):\n- test_roll_em: verify dice parsing \"2d6\" produces values in [2,12], \"1d4\" in [1,4]\n- test_swing: verify to-hit calculation matches C formula with known inputs\n- test_pick_one: verify weighted selection from things[] produces valid item types\n\nRun: cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 && cargo test 2>&1\n\nWrite implementation log to .ai/port_combat_items.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if compiles and tests pass, outcome=fail with failure_reason and details otherwise."
+        prompt="Goal: $goal\n\nPort the combat core from C to Rust.\n\nRead C source:\n- demo/rogue/original-rogue/fight.c (686 lines)\n- demo/rogue/original-rogue/weapons.c (288 lines)\n- demo/rogue/original-rogue/armor.c (89 lines)\n- demo/rogue/original-rogue/rogue.h\n\nRead Rust project:\n- demo/rogue/rogue-wasm/src/types.rs, src/game.rs, src/rng.rs, src/dungeon.rs\n- .ai/rogue_architecture.md\n\nImplement demo/rogue/rogue-wasm/src/combat.rs with exact ports of:\n- fight() — full melee resolution: to-hit roll, damage, special monster attacks\n- attack() — player attacks monster at position\n- hit_monster() — resolve hit at grid position\n- swing() — to-hit roll formula: at_lvl - op_arm + wplus\n- roll_em() — dice parser and roller (\"2d6+3\" format from damage strings)\n- hit() / miss() — combat message formatting\n- bounce() / fire_bolt() — bolt projectile physics for wand bolts (fire, cold, lightning)\n- killed() — monster death: award XP, drop items, check_level\n- thunk() — thrown weapon impact messages\n- save_throw() — saving throw: d20 vs (10 - level/2)\n- check_level() / raise_level() — XP threshold table and level-up\n- is_magic() — check if item is magical\n\nTests (at least 2 in combat.rs):\n- test_roll_em: verify dice parsing \"2d6\" gives [2,12], \"1d4\" gives [1,4]\n- test_swing: verify to-hit calculation matches C formula with known inputs\n\nRun:\n- cd demo/rogue/rogue-wasm && cargo build --lib 2>&1\n- cd demo/rogue/rogue-wasm && cargo test combat 2>&1\n\nWrite implementation log to .ai/port_combat_core.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if compiles and tests pass, outcome=fail with failure_reason and details otherwise."
     ]
 
-    verify_combat_items [
+    verify_combat_core [
         shape=box,
         class="verify",
-        max_agent_turns=24,
-        prompt="Verify combat and items port is correct and faithful.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. cd demo/rogue/rogue-wasm && cargo fmt --all -- --check 2>&1 — fail on formatting issues\n3. Lint scoped to changed files:\n   changed=$(git diff --name-only $base_sha -- '*.rs')\n   if [ -n \"$changed\" ]; then cd demo/rogue/rogue-wasm && cargo clippy --lib -- -D warnings 2>&1; fi\n4. cd demo/rogue/rogue-wasm && cargo test combat items 2>&1 — tests must pass\n5. Fidelity spot-checks (compare Rust against C source):\n   a. fight()/swing()/roll_em() match fight.c formulas\n   b. All 14 potion effects match potions.c do_pot() switch cases\n   c. All 18 scroll effects match scrolls.c read_scroll() switch cases\n   d. pot_info/scr_info/ring_info/ws_info probability tables match things.c EXACTLY\n   e. Weapon damage strings match weapons.c table\n   f. Armor AC values match armor.c table (leather=8, ring=7, ... plate=2)\n6. Artifact hygiene: fail if git diff --name-only $base_sha includes paths under target/, pkg/, dist/, build/, or backup/temp patterns.\n\nIMPORTANT: Do NOT lint the entire repo. Only check demo/rogue/rogue-wasm.\n\nWrite results to .ai/verify_combat_items.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if all checks pass and port is faithful, outcome=fail with failure_reason and details."
+        max_agent_turns=20,
+        prompt="Verify combat core port is correct and faithful.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. cd demo/rogue/rogue-wasm && cargo fmt --all -- --check 2>&1 — fail on formatting issues\n3. Lint scoped to changed files:\n   changed=$(git diff --name-only $base_sha -- '*.rs')\n   if [ -n \"$changed\" ]; then cd demo/rogue/rogue-wasm && cargo clippy --lib -- -D warnings 2>&1; fi\n4. cd demo/rogue/rogue-wasm && cargo test combat 2>&1 — tests must pass\n5. Fidelity spot-checks against C source:\n   a. fight()/swing()/roll_em() match fight.c formulas\n   b. Weapon damage strings match weapons.c table\n   c. Armor AC values match armor.c table (leather=8, ring=7, ... plate=2)\n6. Artifact hygiene: fail if git diff --name-only $base_sha includes paths under target/, pkg/, dist/, build/, or backup/temp patterns.\n\nIMPORTANT: Do NOT lint the entire repo. Only check demo/rogue/rogue-wasm.\n\nWrite results to .ai/verify_combat_core.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if all checks pass and port is faithful, outcome=fail with failure_reason and details."
     ]
 
-    check_combat_items [shape=diamond, label="Combat OK?"]
+    check_combat_core [shape=diamond, label="Combat Core OK?"]
 
     // =========================================================================
-    // Phase 7: Monsters, AI & daemons
+    // Phase 6B: Item systems
     // =========================================================================
 
-    impl_monsters [
+    impl_items_core [
         shape=box,
         class="hard",
-        max_agent_turns=60,
+        max_agent_turns=42,
         max_retries=2,
-        prompt="Goal: $goal\n\nPort the monster, AI, and daemon systems from C to Rust.\n\nRead C source:\n- demo/rogue/original-rogue/monsters.c (252 lines)\n- demo/rogue/original-rogue/chase.c (541 lines)\n- demo/rogue/original-rogue/daemon.c (181 lines)\n- demo/rogue/original-rogue/daemons.c (295 lines)\n- demo/rogue/original-rogue/misc.c (597 lines — aggravate, set_oldch, find_dest, rndmove, relocate)\n- demo/rogue/original-rogue/rogue.h\n\nRead Rust project:\n- demo/rogue/rogue-wasm/src/types.rs, src/game.rs, src/rng.rs, src/dungeon.rs, src/combat.rs, src/items.rs\n- .ai/rogue_architecture.md\n\nImplement TWO files:\n\n**src/monsters.rs** — exact ports of:\n- MONSTERS static: all 26 types (A-Z) with exact stats from monsters[] table:\n  name, carry%, flags, STR, EXP, LVL, AC, HP dice, damage strings\n  E.g. 'A' aquator carry=0 ISMEAN, 'D' dragon carry=100 ISMEAN dmg=\"1d8/1d8/3d10\",\n  'E' emu carry=0 ISMEAN, 'M' medusa carry=40 ISMEAN|CANHUH, 'V' vampire carry=20 ISMEAN|ISREGEN\n- new_monster() — create monster from template, set stats, place on map\n- randmonster() — level-appropriate random selection (higher level monsters at deeper levels)\n- wanderer() — spawn wandering monster in random room\n- wake_monster() — wake sleeping monster on player room entry\n- give_pack() — random monster inventory based on carry%\n- see_monst() / set_mname() — visibility and naming\n- remove_mon() — remove monster from level (unlink from monster list, clear map position)\n- Chase AI from chase.c:\n  chase() — main chase algorithm: line-of-sight, distance heuristics, diagonal movement\n  do_chase() — per-turn chase execution with room awareness\n  runto() — set monster run destination\n  move_monst() — move all monsters for this turn\n  diag_ok() — diagonal movement validation (can't cut corners through walls)\n  cansee() — line-of-sight check\n  dist() / dist_cp() — distance calculations\n  turn_ok() — validate movement direction\n- Utility from misc.c:\n  find_dest() / rndmove() / relocate() / aggravate() / set_oldch()\n\n**src/daemon.rs** — exact ports of:\n- d_list: [DelayedAction; MAXDAEMONS] stored in GameState\n- Scheduling API from daemon.c:\n  start_daemon(func, arg, type) / kill_daemon(func)\n  do_daemons(flag) — execute due daemons matching flag (BEFORE/AFTER)\n  fuse(func, arg, time, type) / lengthen(func, add_time) / extinguish(func)\n  do_fuses(flag) — decrement and fire due fuses\n- Specific daemon implementations from daemons.c:\n  runners() — move running monsters each turn\n  doctor() — HP regeneration: 1 HP per (21-level) turns, minimum 3 turns between heals\n  stomach() — hunger: decrement food_left, state transitions at 300 (hungry), 150 (weak), 0 (faint), -MORETIME (starve)\n  swander() — start wandering monster timer: spread(70) turns\n  come_down() — end hallucination (potion P_LSD)\n  unconfuse() — end confusion\n  unsee() — end see-invisible\n  sight() / visuals() — hallucination visual effects\n  nohaste() — end haste, check double-haste confusion\n  land() — end levitation\n  rollwand() — wand of polymorph duration\n- Timing constants: HEALTIME=30 base, HUNGERTIME=1300, MORETIME=150, STOMACHSIZE=2000, STARVETIME=850, WANDERTIME=spread(70)\n\nUnit tests (at least 3):\n- test_monster_table: all 26 entries A-Z present with correct names and flag values\n- test_daemon_lifecycle: start_daemon, verify do_daemons fires callback, kill_daemon removes it\n- test_hunger_system: stomach() decrements food_left, transitions through hungry/weak/faint states at correct thresholds\n\nRun: cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 && cargo test 2>&1\n\nWrite implementation log to .ai/port_monsters.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if compiles and tests pass, outcome=fail with failure_reason and details otherwise."
+        prompt="Goal: $goal\n\nPort the item systems from C to Rust.\n\nRead C source:\n- demo/rogue/original-rogue/potions.c (375 lines)\n- demo/rogue/original-rogue/scrolls.c (329 lines)\n- demo/rogue/original-rogue/rings.c (204 lines)\n- demo/rogue/original-rogue/sticks.c (431 lines)\n- demo/rogue/original-rogue/things.c (713 lines)\n- demo/rogue/original-rogue/weapons.c (288 lines)\n- demo/rogue/original-rogue/armor.c (89 lines)\n- demo/rogue/original-rogue/rogue.h\n\nRead Rust project:\n- demo/rogue/rogue-wasm/src/types.rs, src/game.rs, src/rng.rs, src/combat.rs, src/dungeon.rs\n- .ai/rogue_architecture.md\n\nImplement demo/rogue/rogue-wasm/src/items.rs with exact ports of:\n- Static data tables with EXACT probability weights from things.c:\n  pot_info[14] (confuse, LSD, poison, strength, see-invisible, healing, monster-detect, magic-detect, raise, extra-healing, haste, restore, blindness, levitation)\n  scr_info[18] (confuse, map, hold, sleep, armor, id-potion, id-scroll, id-weapon, id-armor, id-ring, scare, food-detect, teleport, enchant, create-monster, remove-curse, aggravate, protect)\n  ring_info[14], ws_info[14], weap_info[9], arm_info[8], things[7]\n- new_thing() / pick_one() — weighted random item generation\n- inv_name() / nameit() / choose_str() / vowelstr() — item name formatting\n- do_pot() — all 14 potion effects\n- quaff() — drink potion handler\n- read_scroll() — all 18 scroll effects\n- ring_on() / ring_off() / ring_eat() / ring_num() — ring equip/unequip/effects\n- do_zap() / fix_stick() — wand/staff activation and charge management\n- missile() / do_motion() / fall() — thrown weapon trajectory\n- drop() / dropcheck() — drop item from inventory\n- eat() — food consumption and hunger reset\n- wear() / take_off() — armor equip/unequip\n- wield() — weapon equip\n- current() — describe currently equipped items\n- whatis() / identify() / call() / call_it() — item identification system\n- init_weapon() — weapon stat initialization\n- add_pack() / pack_room() / leave_pack() / inventory() / pick_up() — full pack management\n- money() / set_know() / set_order() / pick_color() / charge_str() / num()\n\nTests (at least 2 in items.rs):\n- test_pick_one: weighted selection from things[] produces valid item types\n- test_item_counts: all 14 potions, 18 scrolls, 14 rings, 14 sticks can be generated\n\nRun:\n- cd demo/rogue/rogue-wasm && cargo build --lib 2>&1\n- cd demo/rogue/rogue-wasm && cargo test items 2>&1\n\nWrite implementation log to .ai/port_items_core.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if compiles and tests pass, outcome=fail with failure_reason and details otherwise."
     ]
 
-    verify_monsters [
+    verify_items_core [
         shape=box,
         class="verify",
-        max_agent_turns=24,
-        prompt="Verify monster, AI, and daemon port is correct and faithful.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. cd demo/rogue/rogue-wasm && cargo fmt --all -- --check 2>&1 — fail on formatting issues\n3. Lint scoped to changed files:\n   changed=$(git diff --name-only $base_sha -- '*.rs')\n   if [ -n \"$changed\" ]; then cd demo/rogue/rogue-wasm && cargo clippy --lib -- -D warnings 2>&1; fi\n4. cd demo/rogue/rogue-wasm && cargo test monster daemon 2>&1 — tests must pass\n5. Fidelity spot-checks (compare Rust against C source):\n   a. All 26 monster entries match monsters.c table exactly (spot-check A, D, E, M, V, Z)\n   b. chase()/do_chase() algorithm matches chase.c\n   c. daemon scheduling (start_daemon/fuse/do_daemons/do_fuses) matches daemon.c\n   d. Hunger timing: HUNGERTIME=1300, transitions at 300/150/0 match daemons.c stomach()\n   e. HP regen: 1 HP per (21-level) turns, min 3 — matches daemons.c doctor()\n6. Artifact hygiene: fail if git diff --name-only $base_sha includes paths under target/, pkg/, dist/, build/, or backup/temp patterns.\n\nIMPORTANT: Do NOT lint the entire repo. Only check demo/rogue/rogue-wasm.\n\nWrite results to .ai/verify_monsters.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if all checks pass and port is faithful, outcome=fail with failure_reason and details."
+        max_agent_turns=20,
+        prompt="Verify item system port is correct and faithful.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. cd demo/rogue/rogue-wasm && cargo fmt --all -- --check 2>&1 — fail on formatting issues\n3. Lint scoped to changed files:\n   changed=$(git diff --name-only $base_sha -- '*.rs')\n   if [ -n \"$changed\" ]; then cd demo/rogue/rogue-wasm && cargo clippy --lib -- -D warnings 2>&1; fi\n4. cd demo/rogue/rogue-wasm && cargo test items 2>&1 — tests must pass\n5. Fidelity spot-checks against C source:\n   a. All 14 potion effects match potions.c do_pot() switch cases\n   b. All 18 scroll effects match scrolls.c read_scroll() switch cases\n   c. pot_info/scr_info/ring_info/ws_info probability tables match things.c EXACTLY\n6. Artifact hygiene: fail if git diff --name-only $base_sha includes paths under target/, pkg/, dist/, build/, or backup/temp patterns.\n\nIMPORTANT: Do NOT lint the entire repo. Only check demo/rogue/rogue-wasm.\n\nWrite results to .ai/verify_items_core.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if all checks pass and port is faithful, outcome=fail with failure_reason and details."
     ]
 
-    check_monsters [shape=diamond, label="Monsters OK?"]
+    check_items_core [shape=diamond, label="Items OK?"]
 
     // =========================================================================
-    // Phase 8: Player systems, I/O & state
+    // Phase 7A: Monster table and chase AI
     // =========================================================================
 
-    impl_player_io [
+    impl_monster_ai [
         shape=box,
         class="hard",
-        max_agent_turns=60,
+        max_agent_turns=42,
         max_retries=2,
-        prompt="Goal: $goal\n\nPort player, I/O, and state systems from C to Rust. All I/O goes through the WASM bridge — no ncurses.\n\nRead C source:\n- demo/rogue/original-rogue/move.c (425L), command.c (820L), pack.c (503L)\n- demo/rogue/original-rogue/io.c (277L), list.c (113L)\n- demo/rogue/original-rogue/save.c (390L), state.c (2134L)\n- demo/rogue/original-rogue/init.c (447L), options.c (501L)\n- demo/rogue/original-rogue/rip.c (449L), wizard.c (284L), misc.c (597L)\n- demo/rogue/original-rogue/rogue.h\n\nRead Rust project:\n- demo/rogue/rogue-wasm/src/types.rs, src/game.rs, src/rng.rs, src/dungeon.rs, src/combat.rs, src/items.rs, src/monsters.rs, src/daemon.rs\n- .ai/rogue_architecture.md\n\nImplement FIVE files:\n\n**src/player.rs** — from command.c, move.c, misc.c:\n- command(key) — full key dispatch: h/j/k/l/y/u/b/n movement, H/J/K/L/Y/U/B/N running, . wait, > down stairs, < up stairs, e eat, q quaff, r read scroll, w wield, W wear armor, T take off armor, P put on ring, R remove ring, d drop, c call/name item, D list discovered items, i inventory, s search, z zap wand, t throw, f fight-to-death, ? help, / identify char, ^R redraw, Q quit, S save, ! shell (noop in WASM)\n- do_move(dy, dx) / do_run(dy, dx) — movement with wall/monster/trap/item checks\n- look() — update visibility based on current room/corridor\n- enter_room() / leave_room() / erase_lamp() — room transition handling\n- search() — active search for traps/secret doors\n- be_trapped() — trigger trap effects\n- door_open() — open door\n- teleport() — random teleport\n- d_level() / u_level() — go down/up stairs\n- help() / show_map() / show_win() / status() / waste_time() / illcom()\n\n**src/io_bridge.rs** — from io.c (NO ncurses — buffer to screen grid):\n- msg(text) / addmsg(text) / endmsg() — message line (row 0 of screen buffer), with --More-- pagination tracking\n- status() — status line (row NUMLINES-1): \"Level: %d  Hits: %d(%d)  Str: %d(%d)  Gold: %d  Armor: %d  Exp: %d/%d\"\n- readchar() — returns next key from input queue stored in GameState\n- wait_for(ch) — consume keys until specific character\n- look() helpers — screen buffer manipulation (mvaddch equivalent writes to GameState.screen)\n- All output writes to GameState.screen buffer [Cell; NUMCOLS*NUMLINES], consumed by JS renderer\n\n**src/state.rs** — from save.c, state.c (WASM-adapted):\n- save_game(&GameState) -> String — serialize full game state via serde_json\n- load_game(data: &str) -> Result<GameState> — deserialize\n- Must serialize/restore: rooms array, places grid, player, monsters list, items list, daemon list, rng seed, all bool/int globals, current level, pack contents, equipment slots, hunger state\n- In WASM: JS calls save_game(), stores in localStorage; load_game() restores from localStorage string\n\n**src/init.rs** — from init.c, options.c:\n- init_player() — starting stats: STR 16, HP 12, LVL 1, AC 10 (ring mail=7 base), EXP 0, starting equipment: mace (1d8 damage), ring mail (AC 7), 1 food ration\n- init_colors() — shuffle potion color names (rainbow array of ~14 colors)\n- init_stones() — shuffle ring gemstone names\n- init_materials() — shuffle wand wood/metal material names\n- init_names() — generate random scroll names (syllable combiner: 2-3 syllables per scroll)\n- init_probs() — build cumulative probability sums for pick_one()\n- parse_opts() / option() — game options (player name, fruit name, terse mode, jump mode, etc.)\n\n**src/score.rs** — from rip.c:\n- death(monster_type) — death handler: show tombstone ASCII art with cause of death\n- total_winner() — amulet victory: list inventory with values, show winner message\n- score() — scoring display\n- Tombstone ASCII art (exact reproduction from rip.c)\n- In WASM: scores stored in localStorage\n\n**src/wizard.rs** — from wizard.c:\n- create_obj() — wizard create any item\n- show_map() — reveal full map\n- teleport() / wizard commands\n- passwd() — wizard password check\n\nUnit tests (at least 3):\n- test_command_dispatch: verify all key bindings map to correct action types\n- test_init_player: starting stats match (STR=16, HP=12, LVL=1, starting mace+ring mail+food)\n- test_save_load_roundtrip: create GameState, modify some fields, save_game -> load_game produces identical state\n\nRun: cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 && cargo test 2>&1\n\nWrite implementation log to .ai/port_player_io.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if compiles and tests pass, outcome=fail with failure_reason and details otherwise."
+        prompt="Goal: $goal\n\nPort monster tables and chase AI from C to Rust.\n\nRead C source:\n- demo/rogue/original-rogue/monsters.c (252 lines)\n- demo/rogue/original-rogue/chase.c (541 lines)\n- demo/rogue/original-rogue/misc.c (find_dest, rndmove, relocate, aggravate, set_oldch)\n- demo/rogue/original-rogue/rogue.h\n\nRead Rust project:\n- demo/rogue/rogue-wasm/src/types.rs, src/game.rs, src/rng.rs, src/dungeon.rs, src/combat.rs, src/items.rs\n- .ai/rogue_architecture.md\n\nImplement demo/rogue/rogue-wasm/src/monsters.rs with exact ports of:\n- MONSTERS static: all 26 types (A-Z) with exact stats from monsters[] table:\n  name, carry%, flags, STR, EXP, LVL, AC, HP dice, damage strings\n  E.g. 'A' aquator carry=0 ISMEAN, 'D' dragon carry=100 ISMEAN dmg=\"1d8/1d8/3d10\",\n  'E' emu carry=0 ISMEAN, 'M' medusa carry=40 ISMEAN|CANHUH, 'V' vampire carry=20 ISMEAN|ISREGEN\n- new_monster() — create monster from template, set stats, place on map\n- randmonster() — level-appropriate random selection (higher level monsters at deeper levels)\n- wanderer() — spawn wandering monster in random room\n- wake_monster() — wake sleeping monster on player room entry\n- give_pack() — random monster inventory based on carry%\n- see_monst() / set_mname() — visibility and naming\n- remove_mon() — remove monster from level (unlink from monster list, clear map position)\n- chase() / do_chase() / runto() / move_monst() / diag_ok() / cansee() / dist() / dist_cp() / turn_ok()\n- find_dest() / rndmove() / relocate() / aggravate() / set_oldch()\n\nTests (at least 2 in monsters.rs):\n- test_monster_table: all 26 entries A-Z with expected key flags/values\n- test_randmonster_progression: deeper levels bias higher-level monsters\n\nRun:\n- cd demo/rogue/rogue-wasm && cargo build --lib 2>&1\n- cd demo/rogue/rogue-wasm && cargo test monster 2>&1\n\nWrite implementation log to .ai/port_monster_ai.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if compiles and tests pass, outcome=fail with failure_reason and details otherwise."
     ]
 
-    verify_player_io [
+    verify_monster_ai [
         shape=box,
         class="verify",
-        max_agent_turns=24,
-        prompt="Verify player, I/O, and state port is correct and faithful.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. cd demo/rogue/rogue-wasm && cargo fmt --all -- --check 2>&1 — fail on formatting issues\n3. Lint scoped to changed files:\n   changed=$(git diff --name-only $base_sha -- '*.rs')\n   if [ -n \"$changed\" ]; then cd demo/rogue/rogue-wasm && cargo clippy --lib -- -D warnings 2>&1; fi\n4. cd demo/rogue/rogue-wasm && cargo test player io init score state 2>&1 — tests must pass\n5. Fidelity spot-checks (compare Rust against C source):\n   a. command() dispatches all keys listed in command.c (30+ bindings)\n   b. do_move() matches move.c movement logic\n   c. Message system matches io.c msg()/addmsg()/endmsg() buffering behavior\n   d. Status line format: \"Level: %d  Hits: %d(%d)  Str: %d(%d)  Gold: %d  Armor: %d  Exp: %d/%d\"\n   e. Tombstone ASCII art matches rip.c\n   f. init_player() stats: STR=16, HP=12, mace, ring mail (matches init.c)\n   g. Save/load roundtrip preserves all game state\n6. Artifact hygiene: fail if git diff --name-only $base_sha includes paths under target/, pkg/, dist/, build/, or backup/temp patterns.\n\nIMPORTANT: Do NOT lint the entire repo. Only check demo/rogue/rogue-wasm.\n\nWrite results to .ai/verify_player_io.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if all checks pass and port is faithful, outcome=fail with failure_reason and details."
+        max_agent_turns=20,
+        prompt="Verify monster table and chase AI port is correct and faithful.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. cd demo/rogue/rogue-wasm && cargo fmt --all -- --check 2>&1 — fail on formatting issues\n3. Lint scoped to changed files:\n   changed=$(git diff --name-only $base_sha -- '*.rs')\n   if [ -n \"$changed\" ]; then cd demo/rogue/rogue-wasm && cargo clippy --lib -- -D warnings 2>&1; fi\n4. cd demo/rogue/rogue-wasm && cargo test monster 2>&1 — tests must pass\n5. Fidelity spot-checks against C source:\n   a. All 26 monster entries match monsters.c table exactly (spot-check A, D, E, M, V, Z)\n   b. chase()/do_chase() behavior matches chase.c\n6. Artifact hygiene: fail if git diff --name-only $base_sha includes paths under target/, pkg/, dist/, build/, or backup/temp patterns.\n\nIMPORTANT: Do NOT lint the entire repo. Only check demo/rogue/rogue-wasm.\n\nWrite results to .ai/verify_monster_ai.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if all checks pass and port is faithful, outcome=fail with failure_reason and details."
     ]
 
-    check_player_io [shape=diamond, label="Player OK?"]
+    check_monster_ai [shape=diamond, label="Monster AI OK?"]
 
     // =========================================================================
-    // Phase 9: Integration — wire into playable WASM game
+    // Phase 7B: Daemon and fuse scheduler
     // =========================================================================
 
-    impl_integration [
+    impl_daemon_core [
         shape=box,
         class="hard",
-        max_agent_turns=60,
+        max_agent_turns=36,
         max_retries=2,
-        prompt="Goal: $goal\n\nAll system ports are complete. Integrate into a playable browser game.\n\nRead: .ai/rogue_architecture.md, .ai/port_dungeon.md, .ai/port_combat_items.md, .ai/port_monsters.md, .ai/port_player_io.md\nRead: all files in demo/rogue/rogue-wasm/src/\n\nIntegration tasks:\n\n1. **Main game loop** in src/game.rs — wire the exact C turn sequence from mach_dep.c playit():\n   new_game(seed): init RNG -> init_player() -> init_colors/stones/materials/names/probs -> new_level(1) -> start_daemon(runners) -> start_daemon(doctor) -> fuse(stomach, HUNGERTIME) -> fuse(swander, WANDERTIME)\n   process_key(key): look() -> status() -> command(key) -> do_daemons(BEFORE) -> do_fuses(BEFORE) -> move_monst() -> do_daemons(AFTER) -> do_fuses(AFTER) -> update screen buffer -> return frame JSON\n\n2. **Cross-module wiring** — resolve all inter-module calls:\n   - new_level() calls new_monster(), put_things(), add gold, place traps\n   - command() dispatches to combat (fight/attack), items (quaff/read/zap/wear/wield/drop/eat), dungeon (d_level/u_level), player (do_move/search/look)\n   - killed() calls give_pack(), award XP, check_level()\n   - Daemon callbacks: runners calls do_chase for each running monster; doctor heals player; stomach manages hunger\n   - Ring effects applied during ring_eat() on relevant actions\n   - Resolve ALL borrow checker issues — may need RefCell or split borrows on GameState\n\n3. **WASM bridge** in src/lib.rs — complete the stubs:\n   #[wasm_bindgen] Game wrapping GameState\n   new(seed: u32) -> Game — calls new_game with full init chain\n   process_key(&mut self, key: &str) -> String — JSON: {\"screen\": [[{\"ch\":\"@\",\"fg\":\"white\",\"bg\":\"black\"},...]], \"message\": \"...\", \"status\": \"Level: 1 ...\", \"game_over\": false}\n   save_game(&self) -> String — serialize via state.rs\n   load_game(&mut self, data: &str) — deserialize via state.rs\n\n4. **HTML frontend** — update www/index.html to be FULLY PLAYABLE:\n   <pre id=\"terminal\"> styled: width 80ch, height 24 lines, font-family monospace, background #000, color #0f0\n   <script type=\"module\"> imports from '../pkg/rogue_wasm.js'\n   On load: await init(), game = Game.new(Date.now()), render()\n   Keyboard: document.addEventListener('keydown', e => { let result = game.process_key(mapKey(e)); render(JSON.parse(result)); e.preventDefault(); })\n   mapKey: ArrowUp->k, ArrowDown->j, ArrowLeft->h, ArrowRight->l, Home->y, End->b, PageUp->u, PageDown->n, Enter->\\r, all others pass e.key\n   Render: for each row 0-23, for each col 0-79, set span textContent and style.color from screen data\n   Color map: map curses color names to CSS (white, red, green, yellow, blue, magenta, cyan)\n   Game over: show death/victory message, offer restart button\n   Save/Load: S key triggers save to localStorage, prompt on page load if save exists\n\n5. **Build and verify**:\n   cd demo/rogue/rogue-wasm && wasm-pack build --target web 2>&1\n   Verify pkg/ contains rogue_wasm.js and rogue_wasm_bg.wasm\n   Verify www/index.html correctly imports from ../pkg/\n   cd demo/rogue/rogue-wasm && cargo test 2>&1 — all tests still pass\n\nThe game MUST compile to WASM. After wasm-pack build, a user should be able to serve www/ and play Rogue.\n\nWrite integration log to .ai/integration_log.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if wasm-pack build succeeds and all tests pass, outcome=fail with failure_reason and details otherwise."
+        prompt="Goal: $goal\n\nPort daemon and fuse scheduling from C to Rust.\n\nRead C source:\n- demo/rogue/original-rogue/daemon.c (181 lines)\n- demo/rogue/original-rogue/daemons.c (295 lines)\n- demo/rogue/original-rogue/rogue.h\n\nRead Rust project:\n- demo/rogue/rogue-wasm/src/types.rs, src/game.rs, src/rng.rs, src/monsters.rs\n- .ai/rogue_architecture.md\n\nImplement demo/rogue/rogue-wasm/src/daemon.rs with exact ports of:\n- d_list: [DelayedAction; MAXDAEMONS] stored in GameState\n- Scheduling API from daemon.c:\n  start_daemon(func, arg, type) / kill_daemon(func)\n  do_daemons(flag) — execute due daemons matching flag (BEFORE/AFTER)\n  fuse(func, arg, time, type) / lengthen(func, add_time) / extinguish(func)\n  do_fuses(flag) — decrement and fire due fuses\n- Specific daemon implementations from daemons.c:\n  runners(), doctor(), stomach(), swander(), come_down(), unconfuse(), unsee(), sight(), visuals(), nohaste(), land(), rollwand()\n- Timing constants and behavior:\n  HEALTIME=30 base; doctor heals 1 HP per (21-level) turns with minimum 3\n  HUNGERTIME=1300, MORETIME=150, STOMACHSIZE=2000, STARVETIME=850\n  stomach transitions at 300 (hungry), 150 (weak), 0 (faint)\n  WANDERTIME=spread(70)\n\nTests (at least 2 in daemon.rs):\n- test_daemon_lifecycle: start_daemon/do_daemons/kill_daemon behavior\n- test_hunger_system: stomach transitions through hungry/weak/faint thresholds\n\nRun:\n- cd demo/rogue/rogue-wasm && cargo build --lib 2>&1\n- cd demo/rogue/rogue-wasm && cargo test daemon 2>&1\n\nWrite implementation log to .ai/port_daemon_core.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if compiles and tests pass, outcome=fail with failure_reason and details otherwise."
     ]
 
-    verify_integration [
+    verify_daemon_core [
         shape=box,
         class="verify",
+        max_agent_turns=20,
+        prompt="Verify daemon and fuse scheduler port is correct and faithful.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. cd demo/rogue/rogue-wasm && cargo fmt --all -- --check 2>&1 — fail on formatting issues\n3. Lint scoped to changed files:\n   changed=$(git diff --name-only $base_sha -- '*.rs')\n   if [ -n \"$changed\" ]; then cd demo/rogue/rogue-wasm && cargo clippy --lib -- -D warnings 2>&1; fi\n4. cd demo/rogue/rogue-wasm && cargo test daemon 2>&1 — tests must pass\n5. Fidelity spot-checks against C source:\n   a. daemon scheduling (start_daemon/fuse/do_daemons/do_fuses) matches daemon.c\n   b. Hunger timing matches daemons.c stomach() (1300 / 300 / 150 / 0)\n   c. HP regen matches daemons.c doctor() (1 HP per (21-level), min 3)\n6. Artifact hygiene: fail if git diff --name-only $base_sha includes paths under target/, pkg/, dist/, build/, or backup/temp patterns.\n\nIMPORTANT: Do NOT lint the entire repo. Only check demo/rogue/rogue-wasm.\n\nWrite results to .ai/verify_daemon_core.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if all checks pass and port is faithful, outcome=fail with failure_reason and details."
+    ]
+
+    check_daemon_core [shape=diamond, label="Daemon OK?"]
+
+    // =========================================================================
+    // Phase 8A: Player commands and IO bridge
+    // =========================================================================
+
+    impl_player_io_core [
+        shape=box,
+        class="hard",
+        max_agent_turns=42,
+        max_retries=2,
+        prompt="Goal: $goal\n\nPort player command handling and IO bridge from C to Rust. All I/O goes through the WASM bridge, not ncurses.\n\nRead C source:\n- demo/rogue/original-rogue/move.c (425 lines)\n- demo/rogue/original-rogue/command.c (820 lines)\n- demo/rogue/original-rogue/io.c (277 lines)\n- demo/rogue/original-rogue/misc.c (relevant helpers)\n- demo/rogue/original-rogue/rogue.h\n\nRead Rust project:\n- demo/rogue/rogue-wasm/src/types.rs, src/game.rs, src/monsters.rs, src/items.rs, src/combat.rs, src/dungeon.rs, src/daemon.rs\n- .ai/rogue_architecture.md\n\nImplement TWO files:\n\n**src/player.rs** — from command.c/move.c/misc.c:\n- command(key) — full key dispatch: h/j/k/l/y/u/b/n movement, H/J/K/L/Y/U/B/N running, . wait, > down stairs, < up stairs, e eat, q quaff, r read scroll, w wield, W wear armor, T take off armor, P put on ring, R remove ring, d drop, c call/name item, D list discovered items, i inventory, s search, z zap wand, t throw, f fight-to-death, ? help, / identify char, ^R redraw, Q quit, S save, ! shell (noop in WASM)\n- do_move(dy, dx) / do_run(dy, dx)\n- look(), enter_room(), leave_room(), erase_lamp(), search(), be_trapped(), door_open(), teleport(), d_level(), u_level()\n- help(), show_map(), show_win(), status(), waste_time(), illcom()\n\n**src/io_bridge.rs** — from io.c with screen buffer output:\n- msg(text) / addmsg(text) / endmsg() with --More-- behavior\n- status() line format: \"Level: %d  Hits: %d(%d)  Str: %d(%d)  Gold: %d  Armor: %d  Exp: %d/%d\"\n- readchar() from GameState key queue\n- wait_for(ch)\n- output writes into GameState.screen [Cell; NUMCOLS*NUMLINES]\n\nTests (at least 2):\n- test_command_dispatch: key bindings map to expected actions\n- test_message_buffering: msg/addmsg/endmsg preserve expected output behavior\n\nRun:\n- cd demo/rogue/rogue-wasm && cargo build --lib 2>&1\n- cd demo/rogue/rogue-wasm && cargo test player io 2>&1\n\nWrite implementation log to .ai/port_player_io_core.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if compiles and tests pass, outcome=fail with failure_reason and details otherwise."
+    ]
+
+    verify_player_io_core [
+        shape=box,
+        class="verify",
+        max_agent_turns=20,
+        prompt="Verify player command and IO bridge port is correct and faithful.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. cd demo/rogue/rogue-wasm && cargo fmt --all -- --check 2>&1 — fail on formatting issues\n3. Lint scoped to changed files:\n   changed=$(git diff --name-only $base_sha -- '*.rs')\n   if [ -n \"$changed\" ]; then cd demo/rogue/rogue-wasm && cargo clippy --lib -- -D warnings 2>&1; fi\n4. cd demo/rogue/rogue-wasm && cargo test player io 2>&1 — tests must pass\n5. Fidelity spot-checks against C source:\n   a. command() dispatches all keys listed in command.c (30+ bindings)\n   b. do_move() matches move.c movement logic\n   c. Message system matches io.c msg()/addmsg()/endmsg()\n   d. Status line format matches C: \"Level: %d  Hits: %d(%d)  Str: %d(%d)  Gold: %d  Armor: %d  Exp: %d/%d\"\n6. Artifact hygiene: fail if git diff --name-only $base_sha includes paths under target/, pkg/, dist/, build/, or backup/temp patterns.\n\nIMPORTANT: Do NOT lint the entire repo. Only check demo/rogue/rogue-wasm.\n\nWrite results to .ai/verify_player_io_core.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if all checks pass and port is faithful, outcome=fail with failure_reason and details."
+    ]
+
+    check_player_io_core [shape=diamond, label="Player+IO OK?"]
+
+    // =========================================================================
+    // Phase 8B: State persistence
+    // =========================================================================
+
+    impl_state_persistence [
+        shape=box,
+        class="hard",
         max_agent_turns=30,
-        prompt="Verify full WASM integration builds and is structurally correct.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. cd demo/rogue/rogue-wasm && cargo fmt --all -- --check 2>&1 — fail on formatting issues\n3. Lint scoped to changed files:\n   changed=$(git diff --name-only $base_sha -- '*.rs')\n   if [ -n \"$changed\" ]; then cd demo/rogue/rogue-wasm && cargo clippy --lib -- -D warnings 2>&1; fi\n4. cd demo/rogue/rogue-wasm && wasm-pack build --target web 2>&1 — must succeed\n5. ls demo/rogue/rogue-wasm/pkg/ — must contain rogue_wasm.js and rogue_wasm_bg.wasm\n6. Verify www/index.html:\n   - Imports from ../pkg/rogue_wasm.js\n   - Has terminal grid element\n   - Has keyboard handler mapping arrow keys and game keys\n   - Has render function parsing JSON screen data\n   - Has WASM init() call\n7. Verify Game struct exports: new(), process_key(), save_game(), load_game()\n8. Verify game loop in game.rs follows C turn order: look -> status -> command -> daemons(BEFORE) -> fuses(BEFORE) -> move_monst -> daemons(AFTER) -> fuses(AFTER)\n9. cd demo/rogue/rogue-wasm && cargo test 2>&1 — all unit tests pass\n10. Artifact hygiene: fail if git diff --name-only $base_sha includes paths under target/, pkg/, dist/, build/, or backup/temp patterns.\n\nIMPORTANT: Do NOT lint the entire repo. Only check demo/rogue/rogue-wasm.\n\nWrite results to .ai/verify_integration.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if all pass, outcome=fail with failure_reason and details."
-    ]
-
-    check_integration [shape=diamond, label="WASM OK?"]
-
-    // =========================================================================
-    // Phase 10: QA — comprehensive test suite
-    // =========================================================================
-
-    impl_qa [
-        shape=box,
-        class="hard",
-        max_agent_turns=50,
         max_retries=2,
-        prompt="Goal: $goal\n\nThe game compiles to WASM. Now add comprehensive tests and verify correctness against the C source.\n\nRead: .ai/rogue_analysis.md (C behavior reference), all demo/rogue/rogue-wasm/src/ files\n\nAdd tests in demo/rogue/rogue-wasm/src/ modules (#[cfg(test)]) and demo/rogue/rogue-wasm/tests/:\n\n1. **RNG fidelity test** (critical):\n   - Seed=42, call rnd(100) 20 times, record exact sequence\n   - Manually compute expected values using the C formula: seed=seed*11109+13849, rn=(seed>>16)&0xffff, rnd(range)=rn%range\n   - The Rust sequence MUST match the hand-computed C sequence exactly\n\n2. **Dungeon generation tests**:\n   - Fixed seed produces identical room layouts across runs (determinism test)\n   - All rooms within bounds (0..NUMCOLS, 0..NUMLINES)\n   - Passages connect rooms (BFS from any room reaches all non-gone rooms)\n   - Stairs exist on every generated level\n   - At least one non-gone room per level\n\n3. **Monster table integrity**:\n   - 26 monsters A-Z all defined, no gaps\n   - Spot-check exact values: 'D' dragon carry=100, ISMEAN, dmg=\"1d8/1d8/3d10\"; 'E' emu carry=0, ISMEAN; 'A' aquator carry=0, ISMEAN\n   - randmonster() at level 1 returns low-level monsters; at level 26 returns high-level\n\n4. **Combat math tests**:\n   - swing() with known at_lvl, op_arm, wplus matches C formula exactly\n   - roll_em() dice parsing: \"2d6\" -> values in [2,12], \"1d4\" -> [1,4], \"3d10\" -> [3,30]\n   - save_throw() with known level/type matches C: d20 vs (10 - level/2)\n   - check_level() XP thresholds: e_levels = [10,20,40,80,160,320,640,1300,2600,5200,...]\n\n5. **Item generation tests**:\n   - pick_one() distribution over many trials matches cum_prob tables\n   - All 14 potions, 18 scrolls, 14 rings, 14 sticks generatable\n   - inv_name() produces correctly formatted names\n\n6. **Game loop integration test**:\n   - Create game with fixed seed\n   - Send key sequence: [\".\", \"l\", \"l\", \"j\", \"j\", \".\"] (wait, right, right, down, down, wait)\n   - Verify player '@' position changes in screen output\n   - Verify status line updates with correct level/HP\n\n7. **Save/load roundtrip test**:\n   - Create game, make moves, pick up item\n   - save_game() -> JSON string\n   - load_game(json) -> new state\n   - Verify: same level, same player position, same HP, same inventory contents, same RNG seed\n\n8. **Hunger system test**:\n   - Create game, advance many turns via do_fuses\n   - Verify hunger state transitions: satisfied -> hungry (at food_left=300) -> weak (150) -> faint (0)\n\nRun:\n  cd demo/rogue/rogue-wasm && cargo test 2>&1\n  cd demo/rogue/rogue-wasm && wasm-pack test --node 2>&1 || echo \"wasm-pack test skipped (no headless browser)\"\n\nWrite test results to .ai/qa_results.md with pass/fail per category.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if all cargo tests pass, outcome=fail with failure_reason and details listing each failure."
+        prompt="Goal: $goal\n\nPort save/load state persistence from C to Rust/WASM.\n\nRead C source:\n- demo/rogue/original-rogue/save.c (390 lines)\n- demo/rogue/original-rogue/state.c (2134 lines)\n- demo/rogue/original-rogue/rogue.h\n\nRead Rust project:\n- demo/rogue/rogue-wasm/src/types.rs, src/game.rs, src/player.rs, src/daemon.rs, src/items.rs, src/monsters.rs\n- .ai/rogue_architecture.md\n\nImplement demo/rogue/rogue-wasm/src/state.rs:\n- save_game(&GameState) -> String — serialize full state via serde_json\n- load_game(data: &str) -> Result<GameState, _> — deserialize\n- Must serialize/restore: rooms, places, player, monsters, items, daemon list, RNG seed, bool/int globals, current level, inventory/equipment, hunger state\n- WASM model: JS owns localStorage; Rust handles encode/decode and structural integrity checks\n\nTests (at least 2):\n- test_save_load_roundtrip: modified GameState survives roundtrip identically\n- test_save_load_rng_seed: RNG seed restoration is exact\n\nRun:\n- cd demo/rogue/rogue-wasm && cargo build --lib 2>&1\n- cd demo/rogue/rogue-wasm && cargo test state 2>&1\n\nWrite implementation log to .ai/port_state_persistence.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if compiles and tests pass, outcome=fail with failure_reason and details otherwise."
     ]
 
-    verify_qa [
+    verify_state_persistence [
         shape=box,
         class="verify",
-        max_agent_turns=24,
-        prompt="Verify QA test suite passes completely.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. cd demo/rogue/rogue-wasm && cargo fmt --all -- --check 2>&1 — fail on formatting issues\n3. Lint scoped to changed files:\n   changed=$(git diff --name-only $base_sha -- '*.rs')\n   if [ -n \"$changed\" ]; then cd demo/rogue/rogue-wasm && cargo clippy --lib --tests -- -D warnings 2>&1; fi\n4. cd demo/rogue/rogue-wasm && cargo test 2>&1 — capture full output, count total/passed/failed\n5. cd demo/rogue/rogue-wasm && wasm-pack test --node 2>&1 || echo \"wasm-pack test unavailable\"\n6. Check .ai/qa_results.md — verify all 8 test categories documented\n7. Artifact hygiene: fail if git diff --name-only $base_sha includes paths under target/, pkg/, dist/, build/, or backup/temp patterns.\n\nIMPORTANT: Do NOT lint the entire repo. Only check demo/rogue/rogue-wasm.\n\nWrite results to .ai/verify_qa.md. Include: total tests, passed, failed, skipped.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if ALL cargo tests pass (0 failures), outcome=fail with failure_reason and details listing each failing test."
+        max_agent_turns=20,
+        prompt="Verify state persistence port is correct and faithful.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. cd demo/rogue/rogue-wasm && cargo fmt --all -- --check 2>&1 — fail on formatting issues\n3. Lint scoped to changed files:\n   changed=$(git diff --name-only $base_sha -- '*.rs')\n   if [ -n \"$changed\" ]; then cd demo/rogue/rogue-wasm && cargo clippy --lib -- -D warnings 2>&1; fi\n4. cd demo/rogue/rogue-wasm && cargo test state 2>&1 — tests must pass\n5. Fidelity checks:\n   a. save/load coverage includes all core state domains listed in save.c/state.c\n   b. Roundtrip preserves level, position, HP, inventory, RNG seed\n6. Artifact hygiene: fail if git diff --name-only $base_sha includes paths under target/, pkg/, dist/, build/, or backup/temp patterns.\n\nIMPORTANT: Do NOT lint the entire repo. Only check demo/rogue/rogue-wasm.\n\nWrite results to .ai/verify_state_persistence.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if all checks pass and port is faithful, outcome=fail with failure_reason and details."
     ]
 
-    check_qa [shape=diamond, label="QA Pass?"]
+    check_state_persistence [shape=diamond, label="State OK?"]
+
+    // =========================================================================
+    // Phase 8C: Init, scoring, wizard mode
+    // =========================================================================
+
+    impl_init_score_wizard [
+        shape=box,
+        class="hard",
+        max_agent_turns=36,
+        max_retries=2,
+        prompt="Goal: $goal\n\nPort init/options, scoring, and wizard-mode systems from C to Rust.\n\nRead C source:\n- demo/rogue/original-rogue/init.c (447 lines)\n- demo/rogue/original-rogue/options.c (501 lines)\n- demo/rogue/original-rogue/rip.c (449 lines)\n- demo/rogue/original-rogue/wizard.c (284 lines)\n- demo/rogue/original-rogue/rogue.h\n\nRead Rust project:\n- demo/rogue/rogue-wasm/src/types.rs, src/game.rs, src/items.rs, src/player.rs, src/state.rs\n- .ai/rogue_architecture.md\n\nImplement THREE files:\n\n**src/init.rs**:\n- init_player() — STR 16, HP 12, LVL 1, AC 10 (ring mail base 7), EXP 0, starting mace+ring mail+food\n- init_colors(), init_stones(), init_materials(), init_names(), init_probs()\n- parse_opts() / option() core option behaviors for WASM configuration\n\n**src/score.rs**:\n- death(monster_type), total_winner(), score()\n- Tombstone ASCII art faithfully reproduced from rip.c\n- WASM-compatible score persistence behavior\n\n**src/wizard.rs**:\n- create_obj(), show_map(), teleport(), wizard command helpers\n- passwd() behavior\n\nTests (at least 2):\n- test_init_player_stats: STR/HP/LVL/starting gear match C defaults\n- test_tombstone_render: critical tombstone lines are present in output\n\nRun:\n- cd demo/rogue/rogue-wasm && cargo build --lib 2>&1\n- cd demo/rogue/rogue-wasm && cargo test init score wizard 2>&1\n\nWrite implementation log to .ai/port_init_score_wizard.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if compiles and tests pass, outcome=fail with failure_reason and details otherwise."
+    ]
+
+    verify_init_score_wizard [
+        shape=box,
+        class="verify",
+        max_agent_turns=20,
+        prompt="Verify init/options, scoring, and wizard-mode port is correct and faithful.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. cd demo/rogue/rogue-wasm && cargo fmt --all -- --check 2>&1 — fail on formatting issues\n3. Lint scoped to changed files:\n   changed=$(git diff --name-only $base_sha -- '*.rs')\n   if [ -n \"$changed\" ]; then cd demo/rogue/rogue-wasm && cargo clippy --lib -- -D warnings 2>&1; fi\n4. cd demo/rogue/rogue-wasm && cargo test init score wizard 2>&1 — tests must pass\n5. Fidelity checks:\n   a. init_player() stats/equipment match init.c\n   b. Tombstone ASCII art and death/winner flow match rip.c intent\n   c. Wizard-mode helpers map to wizard.c behavior\n6. Artifact hygiene: fail if git diff --name-only $base_sha includes paths under target/, pkg/, dist/, build/, or backup/temp patterns.\n\nIMPORTANT: Do NOT lint the entire repo. Only check demo/rogue/rogue-wasm.\n\nWrite results to .ai/verify_init_score_wizard.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if all checks pass and port is faithful, outcome=fail with failure_reason and details."
+    ]
+
+    check_init_score_wizard [shape=diamond, label="Init/Score/Wizard OK?"]
+
+    // =========================================================================
+    // Phase 9A: Integration loop and cross-module wiring
+    // =========================================================================
+
+    impl_integration_loop [
+        shape=box,
+        class="hard",
+        max_agent_turns=40,
+        max_retries=2,
+        prompt="Goal: $goal\n\nAll subsystem ports are complete. Integrate game loop and cross-module behavior in Rust core.\n\nRead:\n- .ai/rogue_architecture.md\n- .ai/port_dungeon.md\n- .ai/port_combat_core.md\n- .ai/port_items_core.md\n- .ai/port_monster_ai.md\n- .ai/port_daemon_core.md\n- .ai/port_player_io_core.md\n- .ai/port_state_persistence.md\n- .ai/port_init_score_wizard.md\n- all files in demo/rogue/rogue-wasm/src/\n\nImplement integration wiring in Rust core:\n1. Main game loop in src/game.rs matching C turn sequence:\n   new_game(seed): init RNG -> init_player() -> init_colors/stones/materials/names/probs -> new_level(1) -> start_daemon(runners) -> start_daemon(doctor) -> fuse(stomach, HUNGERTIME) -> fuse(swander, WANDERTIME)\n   process_key(key): look() -> status() -> command(key) -> do_daemons(BEFORE) -> do_fuses(BEFORE) -> move_monst() -> do_daemons(AFTER) -> do_fuses(AFTER) -> update screen buffer\n2. Resolve cross-module calls:\n   - new_level() calls new_monster(), put_things(), add gold, place traps\n   - command() dispatches to combat/items/dungeon/player APIs\n   - killed() calls give_pack(), awards XP, invokes check_level()\n   - Daemon callbacks trigger chase/heal/hunger behaviors\n   - Ring effects apply during relevant actions\n3. Resolve borrow/lifetime issues without changing behavior semantics\n\nRun:\n- cd demo/rogue/rogue-wasm && cargo build --lib 2>&1\n- cd demo/rogue/rogue-wasm && cargo test 2>&1\n\nWrite integration log to .ai/integration_loop_log.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if build/tests pass and wiring is complete, outcome=fail with failure_reason and details otherwise."
+    ]
+
+    verify_integration_loop [
+        shape=box,
+        class="verify",
+        max_agent_turns=22,
+        prompt="Verify integration loop and core wiring are correct.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. cd demo/rogue/rogue-wasm && cargo fmt --all -- --check 2>&1 — fail on formatting issues\n3. Lint scoped to changed files:\n   changed=$(git diff --name-only $base_sha -- '*.rs')\n   if [ -n \"$changed\" ]; then cd demo/rogue/rogue-wasm && cargo clippy --lib -- -D warnings 2>&1; fi\n4. cd demo/rogue/rogue-wasm && cargo test 2>&1 — tests must pass\n5. Verify game loop order in game.rs:\n   look -> status -> command -> daemons(BEFORE) -> fuses(BEFORE) -> move_monst -> daemons(AFTER) -> fuses(AFTER)\n6. Artifact hygiene: fail if git diff --name-only $base_sha includes paths under target/, pkg/, dist/, build/, or backup/temp patterns.\n\nIMPORTANT: Do NOT lint the entire repo. Only check demo/rogue/rogue-wasm.\n\nWrite results to .ai/verify_integration_loop.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if all checks pass, outcome=fail with failure_reason and details."
+    ]
+
+    check_integration_loop [shape=diamond, label="Core Integration OK?"]
+
+    // =========================================================================
+    // Phase 9B: WASM bridge and browser frontend
+    // =========================================================================
+
+    impl_wasm_frontend [
+        shape=box,
+        class="hard",
+        max_agent_turns=36,
+        max_retries=2,
+        prompt="Goal: $goal\n\nComplete WASM bridge and browser frontend so Rogue is playable from www/index.html.\n\nRead:\n- .ai/rogue_architecture.md\n- .ai/integration_loop_log.md\n- demo/rogue/rogue-wasm/src/lib.rs, src/game.rs, src/state.rs\n- demo/rogue/rogue-wasm/www/index.html\n\nImplement:\n1. src/lib.rs WASM bridge:\n   #[wasm_bindgen] Game wrapper\n   new(seed: u32) -> Game (full init chain)\n   process_key(&mut self, key: &str) -> String JSON with screen/message/status/game_over\n   save_game(&self) -> String\n   load_game(&mut self, data: &str)\n2. www/index.html fully playable UI:\n   - 80x24 terminal grid\n   - keyboard mapping for movement and action keys\n   - render loop from process_key JSON output\n   - color mapping for curses-like colors\n   - game over handling and restart affordance\n   - save/load trigger to localStorage\n3. Build artifacts:\n   - wasm-pack build --target web\n   - verify pkg/ contains rogue_wasm.js and rogue_wasm_bg.wasm\n\nRun:\n- cd demo/rogue/rogue-wasm && wasm-pack build --target web 2>&1\n- cd demo/rogue/rogue-wasm && cargo test 2>&1\n\nWrite integration log to .ai/wasm_frontend_log.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if wasm build/tests pass and frontend is wired, outcome=fail with failure_reason and details otherwise."
+    ]
+
+    verify_wasm_frontend [
+        shape=box,
+        class="verify",
+        max_agent_turns=22,
+        prompt="Verify WASM bridge and browser frontend are correct.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. cd demo/rogue/rogue-wasm && cargo fmt --all -- --check 2>&1 — fail on formatting issues\n3. Lint scoped to changed files:\n   changed=$(git diff --name-only $base_sha -- '*.rs')\n   if [ -n \"$changed\" ]; then cd demo/rogue/rogue-wasm && cargo clippy --lib -- -D warnings 2>&1; fi\n4. cd demo/rogue/rogue-wasm && wasm-pack build --target web 2>&1 — must succeed\n5. ls demo/rogue/rogue-wasm/pkg/ — must contain rogue_wasm.js and rogue_wasm_bg.wasm\n6. Verify www/index.html:\n   - Imports from ../pkg/rogue_wasm.js\n   - Has terminal grid\n   - Has keyboard handler and key mapping\n   - Parses JSON screen data and renders\n   - Calls WASM init()\n7. Verify Game exports: new(), process_key(), save_game(), load_game()\n8. cd demo/rogue/rogue-wasm && cargo test 2>&1 — tests pass\n9. Artifact hygiene: fail if git diff --name-only $base_sha includes paths under target/, pkg/, dist/, build/, or backup/temp patterns.\n\nIMPORTANT: Do NOT lint the entire repo. Only check demo/rogue/rogue-wasm.\n\nWrite results to .ai/verify_wasm_frontend.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if all checks pass, outcome=fail with failure_reason and details."
+    ]
+
+    check_wasm_frontend [shape=diamond, label="WASM Frontend OK?"]
+
+    // =========================================================================
+    // Phase 10A: QA core fidelity suites
+    // =========================================================================
+
+    impl_qa_core [
+        shape=box,
+        class="hard",
+        max_agent_turns=36,
+        max_retries=2,
+        prompt="Goal: $goal\n\nAdd core fidelity tests and verify correctness against C behavior.\n\nRead: .ai/rogue_analysis.md and all demo/rogue/rogue-wasm/src/ files.\n\nAdd tests for:\n1. RNG fidelity:\n   - Seed=42, call rnd(100) 20 times, compare to values derived from C formula (seed=seed*11109+13849; rn=(seed>>16)&0xffff; rnd=rn%range)\n2. Dungeon generation:\n   - deterministic layout for fixed seed\n   - bounds checks\n   - passage connectivity across non-gone rooms\n   - stairs present on each level\n3. Monster table integrity:\n   - 26 monsters A-Z\n   - spot-check D/E/A stats\n4. Combat math:\n   - swing formula, roll_em ranges, save_throw behavior, XP threshold checks\n5. Item generation:\n   - pick_one distribution sanity\n   - all potion/scroll/ring/stick classes generatable\n\nRun:\n- cd demo/rogue/rogue-wasm && cargo test 2>&1\n\nWrite results to .ai/qa_core_results.md with pass/fail per category.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if core QA tests pass, outcome=fail with failure_reason and details listing each failure."
+    ]
+
+    verify_qa_core [
+        shape=box,
+        class="verify",
+        max_agent_turns=20,
+        prompt="Verify core QA suite coverage and outcomes.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. cd demo/rogue/rogue-wasm && cargo fmt --all -- --check 2>&1 — fail on formatting issues\n3. Lint scoped to changed files:\n   changed=$(git diff --name-only $base_sha -- '*.rs')\n   if [ -n \"$changed\" ]; then cd demo/rogue/rogue-wasm && cargo clippy --lib --tests -- -D warnings 2>&1; fi\n4. cd demo/rogue/rogue-wasm && cargo test 2>&1 — capture full output\n5. Check .ai/qa_core_results.md includes categories 1-5 and explicit pass/fail entries\n6. Artifact hygiene: fail if git diff --name-only $base_sha includes paths under target/, pkg/, dist/, build/, or backup/temp patterns.\n\nIMPORTANT: Do NOT lint the entire repo. Only check demo/rogue/rogue-wasm.\n\nWrite results to .ai/verify_qa_core.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if all checks pass, outcome=fail with failure_reason and details."
+    ]
+
+    check_qa_core [shape=diamond, label="QA Core OK?"]
+
+    // =========================================================================
+    // Phase 10B: Runtime/integration QA suites
+    // =========================================================================
+
+    impl_qa_runtime [
+        shape=box,
+        class="hard",
+        max_agent_turns=30,
+        max_retries=2,
+        prompt="Goal: $goal\n\nAdd runtime/integration QA suites and produce final QA summary.\n\nRead:\n- .ai/qa_core_results.md\n- all demo/rogue/rogue-wasm/src/ files\n\nAdd tests for:\n6. Game loop integration:\n   - fixed-seed game, key sequence [\".\", \"l\", \"l\", \"j\", \"j\", \".\"], verify '@' moves and status updates\n7. Save/load roundtrip:\n   - move/pick-up state survives save_game() -> load_game()\n8. Hunger progression:\n   - turns advance through satisfied -> hungry (300) -> weak (150) -> faint (0)\n\nRun:\n- cd demo/rogue/rogue-wasm && cargo test 2>&1\n- cd demo/rogue/rogue-wasm && wasm-pack test --node 2>&1 || echo \"wasm-pack test skipped (no headless browser)\"\n\nWrite consolidated QA report to .ai/qa_results.md with all 8 categories and pass/fail status.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if runtime QA passes and consolidated report is complete, outcome=fail with failure_reason and details listing each failure."
+    ]
+
+    verify_qa_runtime [
+        shape=box,
+        class="verify",
+        max_agent_turns=20,
+        prompt="Verify runtime/integration QA suite and consolidated report.\n\nRun:\n1. cd demo/rogue/rogue-wasm && cargo build --lib 2>&1 — must succeed\n2. cd demo/rogue/rogue-wasm && cargo fmt --all -- --check 2>&1 — fail on formatting issues\n3. Lint scoped to changed files:\n   changed=$(git diff --name-only $base_sha -- '*.rs')\n   if [ -n \"$changed\" ]; then cd demo/rogue/rogue-wasm && cargo clippy --lib --tests -- -D warnings 2>&1; fi\n4. cd demo/rogue/rogue-wasm && cargo test 2>&1 — capture full output\n5. cd demo/rogue/rogue-wasm && wasm-pack test --node 2>&1 || echo \"wasm-pack test unavailable\"\n6. Check .ai/qa_results.md includes categories 1-8 and summary totals\n7. Artifact hygiene: fail if git diff --name-only $base_sha includes paths under target/, pkg/, dist/, build/, or backup/temp patterns.\n\nIMPORTANT: Do NOT lint the entire repo. Only check demo/rogue/rogue-wasm.\n\nWrite results to .ai/verify_qa_runtime.md (include totals: passed/failed/skipped).\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if all checks pass, outcome=fail with failure_reason and details."
+    ]
+
+    check_qa_runtime [shape=diamond, label="QA Runtime OK?"]
 
     // =========================================================================
     // Phase 11: Final review
@@ -238,7 +364,7 @@ digraph rogue_fast_regen {
         class="review",
         goal_gate=true,
         max_agent_turns=50,
-        prompt="Goal: $goal\n\nFinal review of the complete Rogue C-to-Rust/WASM port.\n\nRead: .ai/spec.md, .ai/rogue_analysis.md, .ai/rogue_architecture.md, .ai/qa_results.md\nRead: all files in demo/rogue/rogue-wasm/src/, demo/rogue/rogue-wasm/www/index.html\n\nReview checklist:\n\n1. **WASM deliverable**: Run cd demo/rogue/rogue-wasm && wasm-pack build --target web 2>&1. MUST succeed. Verify pkg/ has .wasm + .js. Verify www/index.html loads the WASM and renders a terminal.\n\n2. **Completeness**: Cross-reference .ai/rogue_analysis.md against implemented Rust modules.\n   - Count functions in analysis vs. implemented Rust functions\n   - Flag any missing systems or unimplemented functions\n   - All 33 C source files should have corresponding Rust implementations\n\n3. **Fidelity spot-checks** (compare Rust code against C source directly):\n   a. RNG: seed*11109+13849 >> 16 & 0xffff — exact formula\n   b. Room gen: 3x3 grid, MAXROOMS=9, size randomization matches rooms.c\n   c. Monster table: all 26 entries — check 'E'=emu, 'M'=medusa, 'V'=vampire, 'D'=dragon stats\n   d. Combat: swing() = at_lvl - op_arm + wplus, roll_em() dice parsing\n   e. Hunger: HUNGERTIME=1300, state transitions at 300/150/0\n   f. HP regen: 1HP per (21-level) turns, min 3\n   g. Scroll S_TELEP: teleports player to random floor position\n   h. Potion P_HASTE: doubles speed, stacking causes confusion\n   i. Trap T_ARROW: 1d6 damage\n   j. XP table: e_levels = [10,20,40,80,160,320,640,1300,2600,5200,...]\n\n4. **Browser playability**: Does www/index.html:\n   - Import WASM correctly from ../pkg/?\n   - Have keyboard handler for all game commands (hjkl, arrow keys, all action keys)?\n   - Render 80x24 ASCII grid with colors?\n   - Handle game over state (death/victory)?\n   - Support save/load via localStorage?\n\n5. **QA**: All tests pass — check .ai/qa_results.md and .ai/verify_qa.md for 0 failures\n\n6. **Missing features**: Verify presence of: wizard mode, save/load, scoring, options, all 14 potions, all 18 scrolls, all 14 rings, all 14 sticks, all 9 weapons, all 8 armors, all 26 monsters\n\n7. **Build verification**:\n   cd demo/rogue/rogue-wasm && cargo test 2>&1 — all tests pass\n   cd demo/rogue/rogue-wasm && wasm-pack build --target web 2>&1 — builds clean\n\nSandboxed validation policy:\n- Required checks scoped to demo/rogue/rogue-wasm only.\n- Repo-wide network-dependent checks are advisory only.\n\nWrite detailed review to .ai/final_review.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if port is complete, faithful, and playable, outcome=fail with failure_reason and details listing specific issues to fix."
+        prompt="Goal: $goal\n\nFinal review of the complete Rogue C-to-Rust/WASM port.\n\nRead:\n- .ai/spec.md\n- .ai/rogue_analysis.md\n- .ai/rogue_architecture.md\n- .ai/port_combat_core.md\n- .ai/port_items_core.md\n- .ai/port_monster_ai.md\n- .ai/port_daemon_core.md\n- .ai/port_player_io_core.md\n- .ai/port_state_persistence.md\n- .ai/port_init_score_wizard.md\n- .ai/integration_loop_log.md\n- .ai/wasm_frontend_log.md\n- .ai/qa_results.md\nRead all files in demo/rogue/rogue-wasm/src/ and demo/rogue/rogue-wasm/www/index.html.\n\nReview checklist:\n1. WASM deliverable: run cd demo/rogue/rogue-wasm && wasm-pack build --target web 2>&1; verify pkg has .wasm + .js and index loads renderer.\n2. Completeness: cross-reference .ai/rogue_analysis.md and ensure all 33 C files are represented in Rust modules.\n3. Fidelity spot-checks:\n   a. RNG: seed*11109+13849 >> 16 & 0xffff\n   b. Room gen: 3x3 grid, MAXROOMS=9\n   c. Monster table: 26 entries (spot-check E/M/V/D)\n   d. Combat formulas: swing(), roll_em()\n   e. Hunger thresholds: 300/150/0\n   f. HP regen: 1 HP per (21-level), min 3\n   g. S_TELEP behavior\n   h. P_HASTE behavior\n   i. T_ARROW damage\n   j. XP table prefixes [10,20,40,80,160,320,640,1300,2600,5200,...]\n4. Browser playability: keyboard handling, 80x24 rendering, game-over handling, save/load localStorage.\n5. QA: verify .ai/qa_results.md and .ai/verify_qa_runtime.md show 0 critical failures.\n6. Missing features: wizard mode, save/load, scoring, options, full item/monster catalog.\n7. Build verification:\n   cd demo/rogue/rogue-wasm && cargo test 2>&1\n   cd demo/rogue/rogue-wasm && wasm-pack build --target web 2>&1\n\nSandboxed validation policy:\n- Required checks scoped to demo/rogue/rogue-wasm only.\n- Repo-wide network-dependent checks are advisory only.\n\nWrite detailed review to .ai/final_review.md.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path). If unavailable, use $KILROY_STAGE_STATUS_FALLBACK_PATH. Do not write status.json in nested module directories after cd.\nWrite status JSON: outcome=success if port is complete, faithful, and playable, outcome=fail with failure_reason and details listing specific issues to fix."
     ]
 
     check_review [shape=diamond, label="Review OK?"]
@@ -272,43 +398,79 @@ digraph rogue_fast_regen {
 
     // Dungeon
     impl_dungeon -> verify_dungeon -> check_dungeon
-    check_dungeon -> impl_combat_items      [condition="outcome=success"]
+    check_dungeon -> impl_combat_core       [condition="outcome=success"]
     check_dungeon -> impl_dungeon           [condition="outcome=fail && context.failure_class=transient_infra", label="retry-infra", loop_restart=true]
     check_dungeon -> impl_dungeon           [condition="outcome=fail && context.failure_class!=transient_infra", label="retry"]
 
-    // Combat & Items
-    impl_combat_items -> verify_combat_items -> check_combat_items
-    check_combat_items -> impl_monsters     [condition="outcome=success"]
-    check_combat_items -> impl_combat_items [condition="outcome=fail && context.failure_class=transient_infra", label="retry-infra", loop_restart=true]
-    check_combat_items -> impl_combat_items [condition="outcome=fail && context.failure_class!=transient_infra", label="retry"]
+    // Combat core
+    impl_combat_core -> verify_combat_core -> check_combat_core
+    check_combat_core -> impl_items_core    [condition="outcome=success"]
+    check_combat_core -> impl_combat_core   [condition="outcome=fail && context.failure_class=transient_infra", label="retry-infra", loop_restart=true]
+    check_combat_core -> impl_combat_core   [condition="outcome=fail && context.failure_class!=transient_infra", label="retry"]
 
-    // Monsters & Daemons
-    impl_monsters -> verify_monsters -> check_monsters
-    check_monsters -> impl_player_io        [condition="outcome=success"]
-    check_monsters -> impl_monsters         [condition="outcome=fail && context.failure_class=transient_infra", label="retry-infra", loop_restart=true]
-    check_monsters -> impl_monsters         [condition="outcome=fail && context.failure_class!=transient_infra", label="retry"]
+    // Item systems
+    impl_items_core -> verify_items_core -> check_items_core
+    check_items_core -> impl_monster_ai     [condition="outcome=success"]
+    check_items_core -> impl_items_core     [condition="outcome=fail && context.failure_class=transient_infra", label="retry-infra", loop_restart=true]
+    check_items_core -> impl_items_core     [condition="outcome=fail && context.failure_class!=transient_infra", label="retry"]
 
-    // Player, I/O & State
-    impl_player_io -> verify_player_io -> check_player_io
-    check_player_io -> impl_integration     [condition="outcome=success"]
-    check_player_io -> impl_player_io       [condition="outcome=fail && context.failure_class=transient_infra", label="retry-infra", loop_restart=true]
-    check_player_io -> impl_player_io       [condition="outcome=fail && context.failure_class!=transient_infra", label="retry"]
+    // Monster AI
+    impl_monster_ai -> verify_monster_ai -> check_monster_ai
+    check_monster_ai -> impl_daemon_core    [condition="outcome=success"]
+    check_monster_ai -> impl_monster_ai     [condition="outcome=fail && context.failure_class=transient_infra", label="retry-infra", loop_restart=true]
+    check_monster_ai -> impl_monster_ai     [condition="outcome=fail && context.failure_class!=transient_infra", label="retry"]
 
-    // Integration
-    impl_integration -> verify_integration -> check_integration
-    check_integration -> impl_qa            [condition="outcome=success"]
-    check_integration -> impl_integration   [condition="outcome=fail && context.failure_class=transient_infra", label="retry-infra", loop_restart=true]
-    check_integration -> impl_integration   [condition="outcome=fail && context.failure_class!=transient_infra", label="retry"]
+    // Daemon scheduler
+    impl_daemon_core -> verify_daemon_core -> check_daemon_core
+    check_daemon_core -> impl_player_io_core [condition="outcome=success"]
+    check_daemon_core -> impl_daemon_core    [condition="outcome=fail && context.failure_class=transient_infra", label="retry-infra", loop_restart=true]
+    check_daemon_core -> impl_daemon_core    [condition="outcome=fail && context.failure_class!=transient_infra", label="retry"]
 
-    // QA
-    impl_qa -> verify_qa -> check_qa
-    check_qa -> review                      [condition="outcome=success"]
-    check_qa -> impl_qa                     [condition="outcome=fail && context.failure_class=transient_infra", label="retry-infra", loop_restart=true]
-    check_qa -> impl_qa                     [condition="outcome=fail && context.failure_class!=transient_infra", label="retry"]
+    // Player + IO
+    impl_player_io_core -> verify_player_io_core -> check_player_io_core
+    check_player_io_core -> impl_state_persistence [condition="outcome=success"]
+    check_player_io_core -> impl_player_io_core    [condition="outcome=fail && context.failure_class=transient_infra", label="retry-infra", loop_restart=true]
+    check_player_io_core -> impl_player_io_core    [condition="outcome=fail && context.failure_class!=transient_infra", label="retry"]
 
-    // Final review — failure loops to integration (late-stage), NOT to scaffold
+    // State persistence
+    impl_state_persistence -> verify_state_persistence -> check_state_persistence
+    check_state_persistence -> impl_init_score_wizard [condition="outcome=success"]
+    check_state_persistence -> impl_state_persistence [condition="outcome=fail && context.failure_class=transient_infra", label="retry-infra", loop_restart=true]
+    check_state_persistence -> impl_state_persistence [condition="outcome=fail && context.failure_class!=transient_infra", label="retry"]
+
+    // Init + Score + Wizard
+    impl_init_score_wizard -> verify_init_score_wizard -> check_init_score_wizard
+    check_init_score_wizard -> impl_integration_loop      [condition="outcome=success"]
+    check_init_score_wizard -> impl_init_score_wizard     [condition="outcome=fail && context.failure_class=transient_infra", label="retry-infra", loop_restart=true]
+    check_init_score_wizard -> impl_init_score_wizard     [condition="outcome=fail && context.failure_class!=transient_infra", label="retry"]
+
+    // Integration loop
+    impl_integration_loop -> verify_integration_loop -> check_integration_loop
+    check_integration_loop -> impl_wasm_frontend          [condition="outcome=success"]
+    check_integration_loop -> impl_integration_loop       [condition="outcome=fail && context.failure_class=transient_infra", label="retry-infra", loop_restart=true]
+    check_integration_loop -> impl_integration_loop       [condition="outcome=fail && context.failure_class!=transient_infra", label="retry"]
+
+    // WASM frontend
+    impl_wasm_frontend -> verify_wasm_frontend -> check_wasm_frontend
+    check_wasm_frontend -> impl_qa_core                  [condition="outcome=success"]
+    check_wasm_frontend -> impl_wasm_frontend            [condition="outcome=fail && context.failure_class=transient_infra", label="retry-infra", loop_restart=true]
+    check_wasm_frontend -> impl_wasm_frontend            [condition="outcome=fail && context.failure_class!=transient_infra", label="retry"]
+
+    // QA core
+    impl_qa_core -> verify_qa_core -> check_qa_core
+    check_qa_core -> impl_qa_runtime                     [condition="outcome=success"]
+    check_qa_core -> impl_qa_core                        [condition="outcome=fail && context.failure_class=transient_infra", label="retry-infra", loop_restart=true]
+    check_qa_core -> impl_qa_core                        [condition="outcome=fail && context.failure_class!=transient_infra", label="retry"]
+
+    // QA runtime
+    impl_qa_runtime -> verify_qa_runtime -> check_qa_runtime
+    check_qa_runtime -> review                           [condition="outcome=success"]
+    check_qa_runtime -> impl_qa_runtime                  [condition="outcome=fail && context.failure_class=transient_infra", label="retry-infra", loop_restart=true]
+    check_qa_runtime -> impl_qa_runtime                  [condition="outcome=fail && context.failure_class!=transient_infra", label="retry"]
+
+    // Final review — failure loops to late integration
     review -> check_review
-    check_review -> exit                    [condition="outcome=success"]
-    check_review -> impl_integration        [condition="outcome=fail && context.failure_class=transient_infra", label="fix-infra", loop_restart=true]
-    check_review -> impl_integration        [condition="outcome=fail && context.failure_class!=transient_infra", label="fix"]
+    check_review -> exit                                 [condition="outcome=success"]
+    check_review -> impl_integration_loop                [condition="outcome=fail && context.failure_class=transient_infra", label="fix-infra", loop_restart=true]
+    check_review -> impl_integration_loop                [condition="outcome=fail && context.failure_class!=transient_infra", label="fix"]
 }
