@@ -10,7 +10,6 @@ Although bringing your own agentic loop and unified LLM SDK is not required to b
 - [Coding Agent Loop Specification](./coding-agent-loop-spec.md)
 - [Unified LLM Client Specification](./unified-llm-spec.md)
 - [Provider Plug-in Migration](./provider-plugin-migration.md)
-- [Reliability Troubleshooting Runbook](./reliability-troubleshooting.md)
 
 ## Runbook Notes
 
