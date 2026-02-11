@@ -32,10 +32,10 @@ var builtinSpecs = map[string]Spec{
 		},
 		CLI: &CLISpec{
 			DefaultExecutable:  "claude",
-			InvocationTemplate: []string{"-p", "--output-format", "stream-json", "--verbose", "--model", "{{model}}", "{{prompt}}"},
+			InvocationTemplate: []string{"-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--model", "{{model}}", "{{prompt}}"},
 			PromptMode:         "arg",
 			HelpProbeArgs:      []string{"--help"},
-			CapabilityAll:      []string{"--output-format", "stream-json", "--verbose"},
+			CapabilityAll:      []string{"--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"},
 		},
 		Failover: []string{"openai", "google"},
 	},
