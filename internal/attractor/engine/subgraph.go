@@ -24,6 +24,8 @@ func runSubgraphUntil(ctx context.Context, eng *Engine, startNodeID, stopNodeID 
 	current := startNodeID
 	completed := []string{}
 	nodeRetries := map[string]int{}
+	nodeVisits := map[string]int{}
+	visitLimit := maxNodeVisits(eng.Graph)
 
 	var lastNode string
 	var lastOutcome runtime.Outcome
@@ -65,6 +67,24 @@ func runSubgraphUntil(ctx context.Context, eng *Engine, startNodeID, stopNodeID 
 		node := eng.Graph.Nodes[current]
 		if node == nil {
 			return parallelBranchResult{}, fmt.Errorf("missing node: %s", current)
+		}
+
+		// Stuck-cycle detection (mirrors runLoop). Halt when any node
+		// reaches max_node_visits within this subgraph execution.
+		nodeVisits[current]++
+		if nodeVisits[current] >= visitLimit {
+			reason := fmt.Sprintf(
+				"subgraph aborted: node %q visited %d times (limit %d); pipeline is stuck in a cycle",
+				current, nodeVisits[current], visitLimit,
+			)
+			eng.appendProgress(map[string]any{
+				"event":       "stuck_cycle_breaker",
+				"node_id":     current,
+				"visit_count": nodeVisits[current],
+				"visit_limit": visitLimit,
+				"subgraph":    true,
+			})
+			return parallelBranchResult{}, fmt.Errorf("%s", reason)
 		}
 
 		eng.cxdbStageStarted(ctx, node)

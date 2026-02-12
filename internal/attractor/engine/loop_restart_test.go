@@ -621,9 +621,10 @@ digraph G {
 	if !strings.Contains(err.Error(), "stuck in a cycle") {
 		t.Fatalf("expected stuck cycle error, got: %v", err)
 	}
-	// impl should have been visited at most max_node_visits+1 times (the check fires on entry)
-	if callCount.Load() > 20 {
-		t.Fatalf("expected backend called <= 20 times, got %d", callCount.Load())
+	// With max_node_visits=5 and >=, impl halts on its 5th visit (before executing),
+	// so 4 complete cycles: impl(4) + verify(4) = 8 backend calls max.
+	if callCount.Load() > 12 {
+		t.Fatalf("expected backend called <= 12 times, got %d", callCount.Load())
 	}
 
 	// Verify final.json was written with failure
