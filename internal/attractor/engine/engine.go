@@ -576,9 +576,10 @@ func (e *Engine) runLoop(ctx context.Context, current string, completed []string
 		e.lastCheckpointSHA = sha
 		e.cxdbCheckpointSaved(ctx, node.ID, out.Status, sha)
 
-		// Kilroy v1: parallel nodes control the next hop (join node) via context.
-		// This keeps the DOT surface simple while allowing deterministic fan-out/fan-in.
+		// Kilroy v1: explicit parallel nodes control the next hop via context.
+		isExplicitParallel := false
 		if t := strings.TrimSpace(node.TypeOverride()); t == "parallel" || (t == "" && shapeToType(node.Shape()) == "parallel") {
+			isExplicitParallel = true
 			join := strings.TrimSpace(e.Context.GetString("parallel.join_node", ""))
 			if join == "" {
 				return nil, fmt.Errorf("parallel node missing parallel.join_node in context")
@@ -586,6 +587,51 @@ func (e *Engine) runLoop(ctx context.Context, current string, completed []string
 			e.incomingEdge = nil
 			current = join
 			continue
+		}
+
+		// Implicit fan-out: when a non-parallel node has multiple eligible outgoing
+		// edges that converge at a common downstream node, dispatch them in parallel.
+		if !isExplicitParallel {
+			allEdges, edgeErr := selectAllEligibleEdges(e.Graph, node.ID, out, e.Context)
+			if edgeErr != nil {
+				return nil, edgeErr
+			}
+			if len(allEdges) > 1 {
+				joinID, joinErr := findJoinNode(e.Graph, allEdges)
+				if joinErr == nil && joinID != "" {
+					exec := &Execution{
+						Graph:       e.Graph,
+						Context:     e.Context,
+						LogsRoot:    e.LogsRoot,
+						WorktreeDir: e.WorktreeDir,
+						Engine:      e,
+					}
+					results, baseSHA, dispatchErr := dispatchParallelBranches(ctx, exec, node.ID, allEdges, joinID)
+					if dispatchErr != nil {
+						return nil, dispatchErr
+					}
+					stageDir := filepath.Join(e.LogsRoot, node.ID)
+					_ = os.MkdirAll(stageDir, 0o755)
+					_ = writeJSON(filepath.Join(stageDir, "parallel_results.json"), results)
+
+					e.Context.ApplyUpdates(map[string]any{
+						"parallel.join_node": joinID,
+						"parallel.results":   results,
+					})
+					e.appendProgress(map[string]any{
+						"event":       "implicit_fan_out",
+						"source_node": node.ID,
+						"join_node":   joinID,
+						"branches":    len(results),
+						"base_sha":    baseSHA,
+					})
+
+					e.incomingEdge = nil
+					current = joinID
+					continue
+				}
+				// If no convergence node found, fall through to single-edge selection.
+			}
 		}
 
 		// Resolve next hop with fan-in failure policy.

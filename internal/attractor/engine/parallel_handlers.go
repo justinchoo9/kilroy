@@ -93,18 +93,61 @@ func (h *ParallelHandler) Execute(ctx context.Context, exec *Execution, node *mo
 		return runtime.Outcome{Status: runtime.StatusFail, FailureReason: err.Error()}, nil
 	}
 
-	stageDir := filepath.Join(exec.LogsRoot, node.ID)
-	_ = os.MkdirAll(stageDir, 0o755)
-
-	// Kilroy git model: create the parallel node checkpoint commit FIRST so branch work is a descendant.
-	// The parallel node itself is orchestration-only; its outcome is always SUCCESS unless orchestration fails.
-	msg := fmt.Sprintf("attractor(%s): %s (%s)", exec.Engine.Options.RunID, node.ID, runtime.StatusSuccess)
-	baseSHA, err := gitutil.CommitAllowEmpty(exec.WorktreeDir, msg)
+	results, baseSHA, err := dispatchParallelBranches(ctx, exec, node.ID, branches, joinID)
 	if err != nil {
 		return runtime.Outcome{Status: runtime.StatusFail, FailureReason: err.Error()}, err
 	}
 
-	maxParallel := parseInt(node.Attr("max_parallel", ""), 4)
+	stageDir := filepath.Join(exec.LogsRoot, node.ID)
+	_ = os.MkdirAll(stageDir, 0o755)
+	_ = writeJSON(filepath.Join(stageDir, "parallel_results.json"), results)
+
+	return runtime.Outcome{
+		Status: runtime.StatusSuccess,
+		Notes:  fmt.Sprintf("parallel fan-out complete (%d branches), join=%s", len(results), joinID),
+		ContextUpdates: map[string]any{
+			"parallel.join_node": joinID,
+			"parallel.results":   results,
+		},
+		Meta: map[string]any{
+			"kilroy.git_checkpoint_sha": baseSHA,
+		},
+	}, nil
+}
+
+// dispatchParallelBranches runs branches in parallel and returns the results.
+// It creates a checkpoint commit, spawns worktrees for each branch, runs subgraphs,
+// and collects results. This is the shared core used by both explicit ParallelHandler
+// and implicit edge-topology fan-out.
+func dispatchParallelBranches(
+	ctx context.Context,
+	exec *Execution,
+	sourceNodeID string,
+	branches []*model.Edge,
+	joinID string,
+) ([]parallelBranchResult, string, error) {
+	if exec == nil || exec.Engine == nil || exec.Graph == nil {
+		return nil, "", fmt.Errorf("dispatchParallelBranches: missing execution context")
+	}
+	if len(branches) == 0 {
+		return nil, "", fmt.Errorf("dispatchParallelBranches: no branches")
+	}
+
+	// Resolve the source node for max_parallel and branch naming.
+	sourceNode := exec.Graph.Nodes[sourceNodeID]
+	if sourceNode == nil {
+		// Create a minimal node so runBranch has something to reference.
+		sourceNode = &model.Node{ID: sourceNodeID, Attrs: map[string]string{}}
+	}
+
+	// Kilroy git model: create the checkpoint commit FIRST so branch work is a descendant.
+	msg := fmt.Sprintf("attractor(%s): %s (%s)", exec.Engine.Options.RunID, sourceNodeID, runtime.StatusSuccess)
+	baseSHA, err := gitutil.CommitAllowEmpty(exec.WorktreeDir, msg)
+	if err != nil {
+		return nil, "", err
+	}
+
+	maxParallel := parseInt(sourceNode.Attr("max_parallel", ""), 4)
 	if maxParallel <= 0 {
 		maxParallel = 4
 	}
@@ -118,6 +161,7 @@ func (h *ParallelHandler) Execute(ctx context.Context, exec *Execution, node *mo
 		edge *model.Edge
 	}
 
+	h := &ParallelHandler{}
 	jobs := make(chan job)
 	results := make([]parallelBranchResult, len(branches))
 	var wg sync.WaitGroup
@@ -129,7 +173,7 @@ func (h *ParallelHandler) Execute(ctx context.Context, exec *Execution, node *mo
 			if e == nil {
 				continue
 			}
-			res := h.runBranch(ctx, exec, node, baseSHA, joinID, j.idx, e, &gitMu)
+			res := h.runBranch(ctx, exec, sourceNode, baseSHA, joinID, j.idx, e, &gitMu)
 			results[j.idx] = res
 		}
 	}
@@ -156,21 +200,7 @@ func (h *ParallelHandler) Execute(ctx context.Context, exec *Execution, node *mo
 		return results[i].StartNodeID < results[j].StartNodeID
 	})
 
-	// Persist results as a stage artifact for easier inspection.
-	_ = writeJSON(filepath.Join(stageDir, "parallel_results.json"), results)
-
-	out := runtime.Outcome{
-		Status: runtime.StatusSuccess,
-		Notes:  fmt.Sprintf("parallel fan-out complete (%d branches), join=%s", len(results), joinID),
-		ContextUpdates: map[string]any{
-			"parallel.join_node": joinID,
-			"parallel.results":   results,
-		},
-		Meta: map[string]any{
-			"kilroy.git_checkpoint_sha": baseSHA,
-		},
-	}
-	return out, nil
+	return results, baseSHA, nil
 }
 
 func (h *ParallelHandler) runBranch(ctx context.Context, exec *Execution, parallelNode *model.Node, baseSHA, joinID string, idx int, edge *model.Edge, gitMu *sync.Mutex) parallelBranchResult {
