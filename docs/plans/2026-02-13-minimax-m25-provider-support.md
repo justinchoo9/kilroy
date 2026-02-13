@@ -12,9 +12,9 @@
 - Base URL: `https://api.minimax.io`
 - Path: `/v1/chat/completions`
 - Auth: `Authorization: Bearer <key>` (standard)
-- Model IDs: `MiniMax-M2.5`, `MiniMax-M2.5-lightning`
+- Model IDs: `MiniMax-M2.5` (only variant currently available on both Minimax API and OpenRouter)
 - Env var: `MINIMAX_API_KEY`
-- Supports: streaming, tool calling, reasoning (via `reasoning_split: true` in request body)
+- Supports: streaming, tool calling, reasoning
 - Context window: ~200K tokens
 - No special execution policy needed (no forced streaming or min tokens)
 
@@ -47,7 +47,7 @@ Add this entry to the `builtinSpecs` map, after the `"cerebras"` entry:
 
 **Rationale:**
 - `ProtocolOpenAIChatCompletions` — Minimax's API is OpenAI-compatible, so it routes through the `openaicompat` adapter automatically (see `api_client_from_runtime.go:35-43`).
-- `ProviderOptionsKey: "minimax"` — allows run configs to pass Minimax-specific options (e.g. `reasoning_split`) via the `openaicompat` adapter's `OptionsKey` mechanism. Note: node-level `provider_options` is **not** currently wired through the engine's codergen router into `llm.Request` — this key is used by the adapter when `ProviderOptions` is set on the request programmatically.
+- `ProviderOptionsKey: "minimax"` — used internally by the `openaicompat` adapter when `llm.Request.ProviderOptions` is set programmatically by callers outside the engine. **This plan does NOT add any `provider_options` wiring in `.dot` files** — that is a pre-existing limitation for all providers (see "What We Don't Need to Change").
 - `ProfileFamily: "openai"` — Minimax follows the OpenAI request/response shape.
 - `Failover: []string{"cerebras"}` — Cerebras is a reasonable fast fallback.
 - `Aliases: []string{"minimax-ai"}` — common alternative name.
@@ -187,7 +187,7 @@ case "minimax":
     }
 ```
 
-**Step 4: Wire `resolveBuiltInBaseURLOverride` into the openaicompat branch**
+**Step 4: CRITICAL — Wire `resolveBuiltInBaseURLOverride` into the openaicompat branch (without this, Step 3 has no effect)**
 
 Change `api_client_from_runtime.go:35-43` from:
 
@@ -282,44 +282,12 @@ Add the following two entries to the `"data"` array in the pinned catalog JSON, 
   "supported_parameters": ["tools", "temperature", "top_p", "max_tokens", "stream", "stop"],
   "per_request_limits": null,
   "expiration_date": null
-},
-{
-  "id": "minimax/minimax-m2.5-lightning",
-  "canonical_slug": "minimax/minimax-m2.5-lightning",
-  "hugging_face_id": "",
-  "name": "MiniMax: MiniMax M2.5 Lightning",
-  "created": 1771200000,
-  "description": "MiniMax M2.5 Lightning - high-speed variant (~100 tps) of M2.5",
-  "context_length": 196608,
-  "architecture": {
-    "modality": "text->text",
-    "input_modalities": ["text"],
-    "output_modalities": ["text"],
-    "tokenizer": "Other",
-    "instruct_type": null
-  },
-  "pricing": {
-    "prompt": "0.0000003",
-    "completion": "0.0000024",
-    "image": "0",
-    "request": "0",
-    "input_cache_read": "0",
-    "input_cache_write": "0",
-    "web_search": "0",
-    "internal_reasoning": "0"
-  },
-  "top_provider": {
-    "context_length": 196608,
-    "max_completion_tokens": 16384,
-    "is_moderated": false
-  },
-  "supported_parameters": ["tools", "temperature", "top_p", "max_tokens", "stream", "stop"],
-  "per_request_limits": null,
-  "expiration_date": null
 }
 ```
 
 **Note on model IDs:** The OpenRouter convention uses lowercase provider-slug format: `minimax/minimax-m2.5`. The `CatalogHasProviderModel` function (`internal/attractor/modeldb/catalog.go:57`) does case-insensitive matching and handles both canonical (`minimax/minimax-m2.5`) and provider-relative (`minimax-m2.5`) forms. So `.dot` files using `llm_model=MiniMax-M2.5` or `llm_model=minimax-m2.5` will both match.
+
+**Note:** Only `minimax/minimax-m2.5` exists on OpenRouter as of Feb 2026. No other M2.5 variants are available. If new variants appear later, add a new catalog entry.
 
 **Step 2: Verify catalog JSON is valid**
 
@@ -330,10 +298,10 @@ Expected: No error (valid JSON).
 
 ```
 git add internal/attractor/modeldb/pinned/openrouter_models.json
-git commit -m "feat(modeldb): add MiniMax M2.5 and M2.5-lightning to pinned catalog
+git commit -m "feat(modeldb): add MiniMax M2.5 to pinned catalog
 
-Add model entries so preflight validation accepts minimax/minimax-m2.5
-and minimax/minimax-m2.5-lightning. Pricing based on published rates."
+Add model entry so preflight validation accepts minimax/minimax-m2.5.
+Pricing based on published rates."
 ```
 
 ---
@@ -508,7 +476,7 @@ to test catalog and RunWithConfig acceptance test cases."
 **Step 1: Run all affected test packages**
 
 Run: `go test ./internal/providerspec/ ./internal/llm/... ./internal/attractor/engine/ -v -count=1`
-Expected: All tests pass. (Note: there is a pre-existing build failure in the engine package due to `isSignatureTrackedFailureClass` being undefined — this is on the committed HEAD and unrelated to our changes. If this blocks, run the packages individually: `go test ./internal/providerspec/ ./internal/llm/... -v -count=1` should all pass.)
+Expected: All tests pass.
 
 **Step 2: Run go vet**
 
@@ -529,7 +497,7 @@ If all tests pass with no issues, no commit needed here.
 | `internal/providerspec/spec_test.go` | Add minimax to builtins check, alias test, defaults test, failover test |
 | `internal/attractor/engine/api_client_from_runtime.go` | Add `"minimax"` case to `resolveBuiltInBaseURLOverride` AND wire override into openaicompat branch |
 | `internal/attractor/engine/api_client_from_runtime_test.go` | Add base URL override tests and runtime registration test |
-| `internal/attractor/modeldb/pinned/openrouter_models.json` | Add `minimax/minimax-m2.5` and `minimax/minimax-m2.5-lightning` entries |
+| `internal/attractor/modeldb/pinned/openrouter_models.json` | Add `minimax/minimax-m2.5` entry |
 | `internal/llm/provider_execution_policy_test.go` | Add `"minimax"` to no-special-policy list |
 | `internal/attractor/engine/run_with_config_test.go` | Add minimax to test catalog and `TestRunWithConfig_AcceptsKimiAndZaiAPIProviders` |
 | `internal/attractor/engine/kimi_zai_api_integration_test.go` | Add minimax case to `TestKimiCodingAndZai_APIIntegration` |
@@ -555,11 +523,6 @@ In a `.dot` file node (uses `llm_provider` and `llm_model` attributes — NOT `p
 a [shape=box, llm_provider=minimax, llm_model=MiniMax-M2.5, prompt="your prompt"]
 ```
 
-For the lightning variant:
-```dot
-a [shape=box, llm_provider=minimax, llm_model=MiniMax-M2.5-lightning, prompt="your prompt"]
-```
-
 Via a stylesheet:
 ```dot
 digraph G {
@@ -578,5 +541,10 @@ This plan revision addresses all 5 major issues identified by the independent GP
 1. **`MINIMAX_BASE_URL` bypass (Task 3):** Now wires `resolveBuiltInBaseURLOverride` into the `ProtocolOpenAIChatCompletions` branch so env overrides actually take effect for openaicompat providers.
 2. **Wrong attribute names in usage examples:** Fixed to use `llm_provider`/`llm_model` (not `provider`/`model`).
 3. **`provider_options` claim removed:** Removed misleading claim that `.dot` nodes can pass `provider_options`. Documented this as a pre-existing limitation in "What We Don't Need to Change."
-4. **Model IDs missing from pinned catalog (Task 4):** New task adds `minimax/minimax-m2.5` and `minimax/minimax-m2.5-lightning` to the pinned OpenRouter catalog.
+4. **Model IDs missing from pinned catalog (Task 4):** New task adds `minimax/minimax-m2.5` to the pinned OpenRouter catalog.
 5. **Incomplete test coverage (Task 7):** New task adds run-level integration test following the kimi/zai pattern, covering config → preflight → routing → adapter.
+
+### Second Review Fixes
+
+6. **Removed non-existent model variant:** Only `minimax/minimax-m2.5` exists on OpenRouter and the Minimax API. Removed all references to any other M2.5 variants from catalog entries, usage examples, and commit messages.
+7. **Fixed pre-existing engine compile break:** Applied `isSignatureTrackedFailureClass` function definition and related `failureClassStructural` changes to the worktree (these existed as uncommitted changes in main). Engine package now compiles and all plan test steps are executable.
