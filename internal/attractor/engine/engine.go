@@ -1652,71 +1652,14 @@ func findStartNodeID(g *model.Graph) string {
 
 // selectNextEdge implements attractor-spec edge selection with deterministic tie-breaks (metaspec).
 func selectNextEdge(g *model.Graph, from string, out runtime.Outcome, ctx *runtime.Context) (*model.Edge, error) {
-	edges := g.Outgoing(from)
+	edges, err := selectAllEligibleEdges(g, from, out, ctx)
+	if err != nil {
+		return nil, err
+	}
 	if len(edges) == 0 {
 		return nil, nil
 	}
-
-	// Eligible conditional edges.
-	var condMatched []*model.Edge
-	for _, e := range edges {
-		if e == nil {
-			continue
-		}
-		c := strings.TrimSpace(e.Condition())
-		if c == "" {
-			continue
-		}
-		ok, err := cond.Evaluate(c, out, ctx)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			condMatched = append(condMatched, e)
-		}
-	}
-	if len(condMatched) > 0 {
-		return bestEdge(condMatched), nil
-	}
-
-	// Unconditional edges are eligible when no condition matched.
-	var uncond []*model.Edge
-	for _, e := range edges {
-		if e == nil {
-			continue
-		}
-		if strings.TrimSpace(e.Condition()) == "" {
-			uncond = append(uncond, e)
-		}
-	}
-	if len(uncond) == 0 {
-		return nil, nil
-	}
-
-	// Preferred label match (in declaration order).
-	if strings.TrimSpace(out.PreferredLabel) != "" {
-		want := normalizeLabel(out.PreferredLabel)
-		sort.SliceStable(uncond, func(i, j int) bool { return uncond[i].Order < uncond[j].Order })
-		for _, e := range uncond {
-			if normalizeLabel(e.Label()) == want {
-				return e, nil
-			}
-		}
-	}
-
-	// Suggested next IDs.
-	if len(out.SuggestedNextIDs) > 0 {
-		sort.SliceStable(uncond, func(i, j int) bool { return uncond[i].Order < uncond[j].Order })
-		for _, suggested := range out.SuggestedNextIDs {
-			for _, e := range uncond {
-				if e.To == suggested {
-					return e, nil
-				}
-			}
-		}
-	}
-
-	return bestEdge(uncond), nil
+	return bestEdge(edges), nil
 }
 
 // selectAllEligibleEdges returns all edges that are eligible for traversal from the given node.
