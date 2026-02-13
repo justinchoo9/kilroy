@@ -15,10 +15,11 @@ import (
 // There is at most one pending question at a time since the engine is
 // single-threaded per pipeline (runLoop calls Interviewer.Ask synchronously).
 type WebInterviewer struct {
-	mu      sync.Mutex
-	pending *pendingQuestion
-	timeout time.Duration
-	qidSeq  uint64
+	mu       sync.Mutex
+	pending  *pendingQuestion
+	timeout  time.Duration
+	qidSeq   uint64
+	cancelCh chan struct{}
 }
 
 type pendingQuestion struct {
@@ -34,7 +35,7 @@ func NewWebInterviewer(timeout time.Duration) *WebInterviewer {
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
 	}
-	return &WebInterviewer{timeout: timeout}
+	return &WebInterviewer{timeout: timeout, cancelCh: make(chan struct{})}
 }
 
 // Ask implements engine.Interviewer. It blocks until an answer is posted or timeout.
@@ -68,6 +69,8 @@ func (wi *WebInterviewer) Ask(q engine.Question) engine.Answer {
 		return ans
 	case <-timer.C:
 		return engine.Answer{TimedOut: true}
+	case <-wi.cancelCh:
+		return engine.Answer{TimedOut: true}
 	}
 }
 
@@ -93,6 +96,19 @@ func (wi *WebInterviewer) Pending() *PendingQuestion {
 	}
 }
 
+// Cancel unblocks any in-flight Ask() call, causing it to return a TimedOut answer.
+// Safe to call multiple times.
+func (wi *WebInterviewer) Cancel() {
+	wi.mu.Lock()
+	defer wi.mu.Unlock()
+	select {
+	case <-wi.cancelCh:
+		// already closed
+	default:
+		close(wi.cancelCh)
+	}
+}
+
 // Answer delivers an answer to the pending question. Returns false if qid
 // doesn't match or no question is pending.
 func (wi *WebInterviewer) Answer(qid string, ans engine.Answer) bool {
@@ -103,7 +119,9 @@ func (wi *WebInterviewer) Answer(qid string, ans engine.Answer) bool {
 	}
 	select {
 	case wi.pending.answerCh <- ans:
+		wi.pending = nil // prevent duplicate answers via race with Ask()'s defer
+		return true
 	default:
+		return false // already answered
 	}
-	return true
 }

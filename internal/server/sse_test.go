@@ -9,7 +9,7 @@ func TestBroadcaster_SendAndSubscribe(t *testing.T) {
 	b := NewBroadcaster()
 
 	// Subscribe before any events.
-	ch, unsub := b.Subscribe()
+	ch, _, unsub := b.Subscribe()
 	defer unsub()
 
 	// Send an event.
@@ -33,7 +33,7 @@ func TestBroadcaster_HistoryReplay(t *testing.T) {
 	b.Send(map[string]any{"event": "second"})
 
 	// Subscribe — should replay history.
-	ch, unsub := b.Subscribe()
+	ch, _, unsub := b.Subscribe()
 	defer unsub()
 
 	var events []string
@@ -53,9 +53,9 @@ func TestBroadcaster_HistoryReplay(t *testing.T) {
 func TestBroadcaster_MultipleSubscribers(t *testing.T) {
 	b := NewBroadcaster()
 
-	ch1, unsub1 := b.Subscribe()
+	ch1, _, unsub1 := b.Subscribe()
 	defer unsub1()
-	ch2, unsub2 := b.Subscribe()
+	ch2, _, unsub2 := b.Subscribe()
 	defer unsub2()
 
 	b.Send(map[string]any{"event": "broadcast"})
@@ -75,7 +75,7 @@ func TestBroadcaster_MultipleSubscribers(t *testing.T) {
 func TestBroadcaster_Close(t *testing.T) {
 	b := NewBroadcaster()
 
-	ch, unsub := b.Subscribe()
+	ch, _, unsub := b.Subscribe()
 	defer unsub()
 
 	b.Close()
@@ -97,7 +97,7 @@ func TestBroadcaster_SubscribeAfterClose(t *testing.T) {
 	b.Close()
 
 	// Subscribe after close — should get history replay then immediate close.
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 
 	var events []map[string]any
 	for ev := range ch {
@@ -128,4 +128,89 @@ func TestBroadcaster_SendAfterClose(t *testing.T) {
 	if len(h) != 0 {
 		t.Fatalf("expected no events after close, got %d", len(h))
 	}
+}
+
+func TestBroadcaster_HistoryReplayOver256(t *testing.T) {
+	b := NewBroadcaster()
+
+	// Send 300 events (exceeds the old hardcoded 256 buffer).
+	for i := 0; i < 300; i++ {
+		b.Send(map[string]any{"n": i})
+	}
+
+	// Subscribe must not deadlock — channel is sized to fit all history.
+	done := make(chan struct{})
+	go func() {
+		ch, _, unsub := b.Subscribe()
+		defer unsub()
+		count := 0
+		for range ch {
+			count++
+			if count == 300 {
+				break
+			}
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// success
+	case <-time.After(2 * time.Second):
+		t.Fatal("Subscribe() deadlocked with >256 history events")
+	}
+}
+
+func TestBroadcaster_DoneCh_RealClose(t *testing.T) {
+	b := NewBroadcaster()
+	_, doneCh, unsub := b.Subscribe()
+	defer unsub()
+
+	// doneCh should not be closed yet.
+	select {
+	case <-doneCh:
+		t.Fatal("doneCh closed before broadcaster.Close()")
+	default:
+	}
+
+	b.Close()
+
+	// doneCh should now be closed.
+	select {
+	case <-doneCh:
+		// expected
+	case <-time.After(time.Second):
+		t.Fatal("doneCh not closed after broadcaster.Close()")
+	}
+}
+
+func TestBroadcaster_SlowClientDropDoesNotCloseDoneCh(t *testing.T) {
+	b := NewBroadcaster()
+
+	// Subscribe with a buffer that will fill up.
+	ch, doneCh, _ := b.Subscribe()
+
+	// Fill the channel buffer (history=0, so buffer=256).
+	for i := 0; i < 256; i++ {
+		b.Send(map[string]any{"n": i})
+	}
+
+	// This send should drop the slow client (channel full, not reading).
+	b.Send(map[string]any{"n": 256})
+
+	// Drain ch to see it's closed (dropped).
+	drained := 0
+	for range ch {
+		drained++
+	}
+
+	// But doneCh should NOT be closed — broadcaster is still alive.
+	select {
+	case <-doneCh:
+		t.Fatal("doneCh closed on slow-client drop (should only close on broadcaster.Close)")
+	default:
+		// correct
+	}
+
+	b.Close()
 }

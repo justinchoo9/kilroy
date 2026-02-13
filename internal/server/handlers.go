@@ -30,6 +30,10 @@ func (s *Server) handleSubmitPipeline(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "dot_source or dot_source_path is required")
 		return
 	}
+	if req.DotSource != "" && req.DotSourcePath != "" {
+		writeError(w, http.StatusBadRequest, "provide dot_source or dot_source_path, not both")
+		return
+	}
 	if req.ConfigPath == "" {
 		writeError(w, http.StatusBadRequest, "config_path is required")
 		return
@@ -158,6 +162,7 @@ func (s *Server) handleCancelPipeline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ps.Cancel(fmt.Errorf("canceled via HTTP API"))
+	ps.Interviewer.Cancel()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "canceling"})
 }
 

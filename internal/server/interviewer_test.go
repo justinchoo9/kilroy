@@ -121,3 +121,75 @@ func TestWebInterviewer_NoPending(t *testing.T) {
 		t.Fatal("answer with no pending question should return false")
 	}
 }
+
+func TestWebInterviewer_Cancel(t *testing.T) {
+	wi := NewWebInterviewer(30 * time.Minute) // long timeout, cancel should preempt
+
+	done := make(chan engine.Answer, 1)
+	go func() {
+		done <- wi.Ask(engine.Question{Text: "will be canceled"})
+	}()
+
+	// Wait for question to be parked.
+	for i := 0; i < 50; i++ {
+		if wi.Pending() != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	start := time.Now()
+	wi.Cancel()
+
+	select {
+	case ans := <-done:
+		if !ans.TimedOut {
+			t.Fatal("expected TimedOut=true on cancel")
+		}
+		if time.Since(start) > time.Second {
+			t.Fatal("Cancel() should unblock Ask() immediately")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ask() did not unblock after Cancel()")
+	}
+}
+
+func TestWebInterviewer_CancelIdempotent(t *testing.T) {
+	wi := NewWebInterviewer(5 * time.Second)
+	// Should not panic on double cancel.
+	wi.Cancel()
+	wi.Cancel()
+}
+
+func TestWebInterviewer_DuplicateAnswerReturnsFalse(t *testing.T) {
+	wi := NewWebInterviewer(5 * time.Second)
+
+	go func() {
+		wi.Ask(engine.Question{Text: "dup test"})
+	}()
+
+	// Wait for question.
+	var pq *PendingQuestion
+	for i := 0; i < 50; i++ {
+		pq = wi.Pending()
+		if pq != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if pq == nil {
+		t.Fatal("no pending question")
+	}
+
+	// First answer succeeds.
+	ok1 := wi.Answer(pq.QuestionID, engine.Answer{Value: "a"})
+	if !ok1 {
+		t.Fatal("first answer should succeed")
+	}
+
+	// Second answer to same QID: channel is full, should return false.
+	ok2 := wi.Answer(pq.QuestionID, engine.Answer{Value: "b"})
+	if ok2 {
+		t.Fatal("duplicate answer should return false")
+	}
+}

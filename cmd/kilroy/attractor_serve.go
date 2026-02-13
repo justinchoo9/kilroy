@@ -8,7 +8,7 @@ import (
 )
 
 func attractorServe(args []string) {
-	addr := ":8080"
+	addr := "127.0.0.1:8080"
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {

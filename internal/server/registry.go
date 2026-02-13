@@ -155,5 +155,8 @@ func (r *PipelineRegistry) CancelAll(reason string) {
 		if ps.Cancel != nil {
 			ps.Cancel(fmt.Errorf("%s", reason))
 		}
+		if ps.Interviewer != nil {
+			ps.Interviewer.Cancel()
+		}
 	}
 }

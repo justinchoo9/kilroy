@@ -15,12 +15,14 @@ type Broadcaster struct {
 	clients map[uint64]chan map[string]any
 	nextID  uint64
 	closed  bool
+	doneCh  chan struct{} // closed only on real broadcaster Close(), not slow-client drops
 }
 
 // NewBroadcaster creates a new event broadcaster.
 func NewBroadcaster() *Broadcaster {
 	return &Broadcaster{
 		clients: make(map[uint64]chan map[string]any),
+		doneCh:  make(chan struct{}),
 	}
 }
 
@@ -44,24 +46,27 @@ func (b *Broadcaster) Send(ev map[string]any) {
 	}
 }
 
-// Subscribe returns a channel of events and an unsubscribe function.
-// The channel receives a replay of all historical events, then live events.
-func (b *Broadcaster) Subscribe() (<-chan map[string]any, func()) {
+// Subscribe returns an events channel, a done channel, and an unsubscribe function.
+// The events channel receives a replay of all historical events, then live events.
+// The done channel is closed only when the broadcaster is closed (pipeline finished),
+// NOT when a slow client is dropped. This lets callers distinguish the two cases.
+func (b *Broadcaster) Subscribe() (<-chan map[string]any, <-chan struct{}, func()) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	ch := make(chan map[string]any, 256)
+	ch := make(chan map[string]any, len(b.history)+256)
 	id := b.nextID
 	b.nextID++
 
-	// Replay history.
+	// Replay history. Channel is sized to fit all history plus live headroom,
+	// so this never blocks while holding the mutex.
 	for _, ev := range b.history {
 		ch <- ev
 	}
 
 	if b.closed {
 		close(ch)
-		return ch, func() {}
+		return ch, b.doneCh, func() {}
 	}
 
 	b.clients[id] = ch
@@ -73,7 +78,7 @@ func (b *Broadcaster) Subscribe() (<-chan map[string]any, func()) {
 			close(ch)
 		}
 	}
-	return ch, unsub
+	return ch, b.doneCh, unsub
 }
 
 // Close signals that no more events will be sent. All client channels are closed.
@@ -81,6 +86,7 @@ func (b *Broadcaster) Close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.closed = true
+	close(b.doneCh)
 	for id, ch := range b.clients {
 		close(ch)
 		delete(b.clients, id)
@@ -111,7 +117,7 @@ func WriteSSE(w http.ResponseWriter, r *http.Request, b *Broadcaster) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	events, unsub := b.Subscribe()
+	events, doneCh, unsub := b.Subscribe()
 	defer unsub()
 
 	ctx := r.Context()
@@ -121,9 +127,15 @@ func WriteSSE(w http.ResponseWriter, r *http.Request, b *Broadcaster) {
 			return
 		case ev, ok := <-events:
 			if !ok {
-				// Broadcaster closed (run finished). Send terminal SSE event.
-				fmt.Fprintf(w, "event: done\ndata: {}\n\n")
-				flusher.Flush()
+				// Channel closed. Only emit "done" if the broadcaster actually
+				// finished (vs. this client being dropped for slowness).
+				select {
+				case <-doneCh:
+					fmt.Fprintf(w, "event: done\ndata: {}\n\n")
+					flusher.Flush()
+				default:
+					// Slow-client drop — just disconnect silently.
+				}
 				return
 			}
 			data, err := json.Marshal(ev)

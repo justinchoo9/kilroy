@@ -397,6 +397,11 @@ func TestIntegration_SubmitValidation(t *testing.T) {
 			body:   `{not json`,
 			expect: http.StatusBadRequest,
 		},
+		{
+			name:   "both dot_source and dot_source_path",
+			body:   `{"dot_source":"digraph{}","dot_source_path":"/tmp/test.dot","config_path":"/tmp/run.yaml"}`,
+			expect: http.StatusBadRequest,
+		},
 	}
 
 	for _, tt := range tests {
