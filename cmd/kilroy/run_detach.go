@@ -10,6 +10,8 @@ import (
 	"syscall"
 )
 
+var detachedExecCommand = exec.Command
+
 func launchDetached(args []string, logsRoot string) error {
 	if strings.TrimSpace(logsRoot) == "" {
 		return fmt.Errorf("logs_root is required for detached runs")
@@ -25,7 +27,8 @@ func launchDetached(args []string, logsRoot string) error {
 	}
 	defer func() { _ = outFile.Close() }()
 
-	cmd := exec.Command(os.Args[0], args...)
+	cmd := detachedExecCommand(os.Args[0], args...)
+	cmd.Dir = logsRoot
 	cmd.Stdin = nil
 	cmd.Stdout = outFile
 	cmd.Stderr = outFile

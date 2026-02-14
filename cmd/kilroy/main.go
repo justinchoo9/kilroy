@@ -183,6 +183,14 @@ func attractorRun(args []string) {
 			}
 			logsRoot = root
 		}
+		absGraphPath, absConfigPath, absLogsRoot, err := resolveDetachedPaths(graphPath, configPath, logsRoot)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		graphPath = absGraphPath
+		configPath = absConfigPath
+		logsRoot = absLogsRoot
 
 		childArgs := []string{"attractor", "run", "--graph", graphPath, "--config", configPath}
 		if runID != "" {
