@@ -58,12 +58,18 @@ func buildBaseNodeEnv(worktreeDir string) []string {
 
 	// GOMODCACHE defaults to $GOPATH/pkg/mod (not directly to HOME).
 	// Pin it after the loop so we can use the resolved GOPATH value.
+	// GOPATH can be a colon-separated list; Go uses the first entry
+	// for GOMODCACHE, so we do the same.
 	if strings.TrimSpace(os.Getenv("GOMODCACHE")) == "" {
 		gopath := toolchainOverrides["GOPATH"]
 		if gopath == "" {
 			gopath = strings.TrimSpace(os.Getenv("GOPATH"))
 		}
 		if gopath != "" {
+			// Use first entry of GOPATH list, matching Go's behavior.
+			if first, _, ok := strings.Cut(gopath, string(filepath.ListSeparator)); ok {
+				gopath = first
+			}
 			toolchainOverrides["GOMODCACHE"] = filepath.Join(gopath, "pkg", "mod")
 		}
 	}

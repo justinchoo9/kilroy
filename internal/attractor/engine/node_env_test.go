@@ -58,6 +58,29 @@ func TestBuildBaseNodeEnv_InfersGoPathsFromHOME(t *testing.T) {
 	}
 }
 
+func TestBuildBaseNodeEnv_GoModCacheUsesFirstGOPATHEntry(t *testing.T) {
+	// GOPATH can be a colon-separated list. Go uses the first entry
+	// for GOMODCACHE ($GOPATH[0]/pkg/mod). Verify we match that behavior.
+	first := t.TempDir()
+	second := t.TempDir()
+	multiPath := first + string(filepath.ListSeparator) + second
+	t.Setenv("GOPATH", multiPath)
+	os.Unsetenv("GOMODCACHE")
+
+	worktree := t.TempDir()
+	env := buildBaseNodeEnv(worktree)
+
+	// GOPATH should be pinned as-is (the full list).
+	if got := envLookup(env, "GOPATH"); got != multiPath {
+		t.Fatalf("GOPATH: got %q want %q", got, multiPath)
+	}
+	// GOMODCACHE should use only the first entry.
+	want := filepath.Join(first, "pkg", "mod")
+	if got := envLookup(env, "GOMODCACHE"); got != want {
+		t.Fatalf("GOMODCACHE: got %q want %q (should use first GOPATH entry)", got, want)
+	}
+}
+
 func TestBuildBaseNodeEnv_SetsCargoTargetDirToWorktree(t *testing.T) {
 	worktree := t.TempDir()
 	env := buildBaseNodeEnv(worktree)
