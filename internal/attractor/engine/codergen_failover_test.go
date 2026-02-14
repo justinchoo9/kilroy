@@ -369,3 +369,10 @@ func TestShouldFailoverLLMError_TurnLimitDoesNotFailover(t *testing.T) {
 		t.Fatalf("legacy turn-limit string should not trigger failover")
 	}
 }
+
+func TestShouldFailoverLLMError_GetwdBootstrapErrorDoesNotFailover(t *testing.T) {
+	err := fmt.Errorf("tool read_file schema: getwd: no such file or directory")
+	if shouldFailoverLLMError(err) {
+		t.Fatalf("getwd bootstrap errors should not trigger failover")
+	}
+}

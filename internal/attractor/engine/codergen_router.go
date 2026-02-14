@@ -449,6 +449,9 @@ func shouldFailoverLLMError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if isLocalBootstrapError(err) {
+		return false
+	}
 	if errors.Is(err, agent.ErrTurnLimit) {
 		return false
 	}
@@ -486,6 +489,18 @@ func shouldFailoverLLMError(err error) bool {
 	// Timeouts, rate limits, server errors, and unknown transport errors can be
 	// provider-specific; failover is often better than hard failure.
 	return true
+}
+
+func isLocalBootstrapError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(strings.TrimSpace(err.Error()))
+	if s == "" {
+		return false
+	}
+	return strings.Contains(s, "getwd: no such file or directory") ||
+		strings.Contains(s, "tool read_file schema: getwd:")
 }
 
 func failoverOrderFromRuntime(primary string, runtimes map[string]ProviderRuntime) ([]string, bool) {
