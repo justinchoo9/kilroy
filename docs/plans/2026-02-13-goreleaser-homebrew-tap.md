@@ -15,7 +15,7 @@
 The module path in `go.mod` is `github.com/strongdm/kilroy` but the repo lives at `github.com/danshapiro/kilroy`. This must match for `go install` to work.
 
 **Files:**
-- Modify: all 123 files containing `github.com/strongdm/kilroy` (go.mod, Go source, docs/plans)
+- Modify: all files containing `github.com/strongdm/kilroy` (go.mod, Go source, docs/plans)
 
 **Step 1: Run the global replacement**
 
@@ -36,12 +36,17 @@ Expected: exits 0, no errors
 Run: `./kilroy --version`
 Expected: `kilroy 0.0.0`
 
-**Step 4: Verify no leftover references**
+**Step 4: Run the full test suite**
+
+Run: `go test ./...`
+Expected: all packages pass (engine tests may fail — this is a pre-existing issue on clean HEAD, not caused by the rename)
+
+**Step 5: Verify no leftover references**
 
 Run: `grep -r 'github\.com/strongdm/kilroy' --include='*.go' --include='*.md' --include='go.mod' . | grep -v '.git/' | grep -v '.worktrees/'`
 Expected: no output
 
-**Step 5: Commit**
+**Step 6: Commit**
 
 ```bash
 git add -u
@@ -404,7 +409,7 @@ With:
 
 Insert after line 10 (`4. Resume interrupted runs...`):
 
-```markdown
+~~~~markdown
 
 ## Installation
 
@@ -438,7 +443,7 @@ Download the latest release from [GitHub Releases](https://github.com/danshapiro
 ```bash
 go build -o kilroy ./cmd/kilroy
 ```
-```
+~~~~
 
 **Step 2: Commit Tasks 7-8 together**
 
