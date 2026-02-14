@@ -1,13 +1,13 @@
 ---
 name: release-kilroy
-description: Use when preparing a Kilroy release — before bumping versions, writing release notes, tagging, etc on GitHub.
+description: Use when preparing a Kilroy release — writing release notes, tagging, and publishing via goreleaser on GitHub.
 ---
 
 # Releasing Kilroy
 
 ## When to Use
 
-Invoke this skill before changing version numbers or cutting a release. Never release without explicit user request.
+Invoke this skill before cutting a release. Never release without explicit user request.
 
 ## Sanity Check
 
@@ -74,7 +74,9 @@ For the **first release** (no previous tag), derive notes from the full project 
 
 ## Version Number
 
-Kilroy uses semver. The version lives in `internal/version/version.go` as a `Version` constant. Decide the bump with the user, but offer a recommendation:
+Kilroy uses semver. The version is injected at build time by goreleaser from the git tag. The file `internal/version/version.go` has `var Version = "dev"` as the default for local builds — do NOT manually edit this for releases.
+
+Decide the bump with the user, but offer a recommendation:
 
 - **Patch** (0.x.Y): Bug fixes, minor improvements
 - **Minor** (0.X.0): New capabilities, new providers, meaningful new features
@@ -137,8 +139,8 @@ scripts/check-using-kilroy-skill.sh
 
 All of these are committed to the release branch:
 
-1. **Bump version** in `internal/version/version.go`
-2. **Update README** with any approved changes
+1. **Write release notes** to `RELEASE_NOTES.md` in the repo root (following the guidelines above). The GitHub Actions workflow passes `--release-notes=RELEASE_NOTES.md` to goreleaser, which publishes it as the GitHub release body. This file is committed (not gitignored) so it is present at the tagged commit.
+2. **Update README** with any approved changes (version is injected by goreleaser from the tag — no file to bump)
 3. **Commit** with message like `release: vX.Y.Z`
 
 ### 6. Fast-forward main
@@ -155,11 +157,26 @@ If `--ff-only` fails, go back to the worktree and rebase onto main until it can 
 ```bash
 git push origin main
 git tag -a vX.Y.Z -m "vX.Y.Z"
-git push --tags
-gh release create vX.Y.Z --title "vX.Y.Z" --notes "..."  # with the release notes
+git push origin vX.Y.Z
+# GoReleaser takes over from here via GitHub Actions:
+#   - Runs go test ./...
+#   - Builds cross-platform binaries (linux/darwin/windows x amd64/arm64)
+#   - Creates GitHub release with archives and checksums
+#   - Updates Homebrew tap (danshapiro/homebrew-kilroy)
 ```
 
-### 8. Clean up
+### 8. Verify the release
+
+1. Watch GitHub Actions: https://github.com/danshapiro/kilroy/actions
+2. Confirm the GitHub release has 6 platform archives + checksums.txt
+3. Confirm the release notes appear on the GitHub release page
+4. Test Homebrew install:
+   ```bash
+   brew install danshapiro/kilroy/kilroy
+   kilroy --version  # should print the new version
+   ```
+
+### 9. Clean up
 
 ```bash
 git worktree remove .worktrees/release-vX.Y.Z
@@ -169,6 +186,6 @@ git branch -d release/vX.Y.Z
 ## Safety
 
 - All release prep happens on a branch in a worktree, so main is never modified until the atomic fast-forward
-- Commit the version bump before tagging so the tag points to the right commit
+- Commit RELEASE_NOTES.md and any README changes before tagging so the tag points to the right commit
 - Build the binary from the release branch and verify `go test ./...` passes before merging
 - If any step fails, stop and assess, then make recommendations to the user, rather than pushing forward
