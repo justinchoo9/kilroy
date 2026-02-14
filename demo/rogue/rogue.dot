@@ -10,11 +10,11 @@ digraph rogue {
         provenance_file_1="path=demo/rogue/rogue-prompt.txt;git_sha=f0ae5b4a",
         provenance_file_2="path=demo/rogue/original-rogue/;git_sha=f0ae5b4a",
         model_stylesheet="
-            * { llm_model: gpt-5.3-codex; llm_provider: openai; reasoning_effort: high; }
-            .hard { llm_model: gpt-5.3-codex; llm_provider: openai; reasoning_effort: high; }
-            .verify { llm_model: gpt-5.3-codex; llm_provider: openai; reasoning_effort: high; }
-            .branch-a { llm_model: claude-opus-4-6; llm_provider: anthropic; }
-            .branch-b { llm_model: gpt-5.2; llm_provider: openai; reasoning_effort: high; }
+            * { llm_model: kimi-k2.5; llm_provider: kimi; reasoning_effort: high; }
+            .hard { llm_model: kimi-k2.5; llm_provider: kimi; reasoning_effort: high; }
+            .verify { llm_model: glm-4.7; llm_provider: zai; reasoning_effort: high; }
+            .branch-a { llm_model: kimi-k2.5; llm_provider: kimi; }
+            .branch-b { llm_model: glm-4.7; llm_provider: zai; }
             .branch-c { llm_model: gemini-3-pro-preview; llm_provider: google; }
         "
     ]
@@ -113,7 +113,7 @@ digraph rogue {
         class="hard",
         allow_partial=true,
         max_retries=8,
-        escalation_models="anthropic:claude-opus-4-6, google:gemini-3-pro-preview",
+        escalation_models="zai:glm-4.7, google:gemini-3-pro-preview",
         prompt="Goal: $goal\n\nYou are implementing a faithful 1:1 port of Rogue 5.4.4 from C to Rust/WebAssembly.\n\nRead these files for context:\n- .ai/plan_final.md (your implementation plan — follow it step by step)\n- .ai/definition_of_done.md (acceptance criteria)\n- .ai/spec.md (detailed specification)\n- If .ai/postmortem_latest.md exists, prioritize fixing the issues identified there.\n\nOriginal C source is at demo/rogue/original-rogue/. Read each C file as you port it.\nAll output goes under demo/rogue/rogue-wasm/.\n\nImplementation approach — progressive compilation:\n1. Set up Cargo.toml with wasm-pack dependencies, create src/lib.rs with module declarations. Verify: cargo check --target wasm32-unknown-unknown\n2. Port core types and constants (from extern.h, rogue.h equivalents). These are the shared data structures everything depends on. Verify: cargo check --target wasm32-unknown-unknown\n3. Port the RNG (exact same formula as the C version). Write unit tests verifying identical output sequences. Verify: cargo test\n4. Port dungeon generation (new_level.c, rooms.c). Verify: cargo check --target wasm32-unknown-unknown\n5. Port monster system (monsters.c, daemons.c, chase.c). Verify: cargo check --target wasm32-unknown-unknown\n6. Port combat (fight.c). Verify: cargo check --target wasm32-unknown-unknown\n7. Port items (potions.c, scrolls.c, rings.c, sticks.c, weapons.c, armor.c). Verify: cargo check --target wasm32-unknown-unknown\n8. Port player systems (command.c, pack.c, move.c). Verify: cargo check --target wasm32-unknown-unknown\n9. Port remaining systems (things.c, misc.c, passages.c, list.c, options.c, wizard.c). Verify: cargo check --target wasm32-unknown-unknown\n10. Implement WASM bridge (replacing io.c ncurses calls with wasm-bindgen exports/imports). Verify: cargo check --target wasm32-unknown-unknown\n11. Implement save/load via localStorage (replacing save.c filesystem ops). Verify: cargo check --target wasm32-unknown-unknown\n12. Create the JS terminal renderer and HTML shell at demo/rogue/rogue-wasm/www/index.html. Verify: wasm-pack build --target web in demo/rogue/rogue-wasm/\n13. Write unit tests for key game systems (RNG, dungeon gen, combat math, item tables). Verify: cargo test in demo/rogue/rogue-wasm/\n\nDo NOT proceed to the next module until the current one compiles.\nIf you spend more than a third of your turns on build errors without reaching a clean compile, simplify: comment out broken code, add stubs, get to green, then iterate.\n\nLog progress to .ai/implementation_log.md (append, do not overwrite).\n\nFinal acceptance:\n- cd demo/rogue/rogue-wasm && cargo check --target wasm32-unknown-unknown\n- cd demo/rogue/rogue-wasm && cargo test\n- cd demo/rogue/rogue-wasm && wasm-pack build --target web\n- demo/rogue/rogue-wasm/www/index.html exists\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path), fallback to $KILROY_STAGE_STATUS_FALLBACK_PATH, and do not write nested status.json files.\nWrite status JSON: outcome=success if final acceptance passes, outcome=fail with failure_reason and details otherwise."
     ]
 
