@@ -49,7 +49,7 @@ git commit -m "refactor: rename module path from strongdm/kilroy to danshapiro/k
 
 The Go module path must match the actual GitHub repo for go install to
 work. Mechanical find-and-replace across all Go source, go.mod, and
-doc plan files (204 occurrences, 123 files)."
+doc plan files."
 ```
 
 ---
@@ -91,7 +91,41 @@ Expected: `kilroy 0.99.0`
 
 ---
 
-### Task 3: Create `.goreleaser.yaml`
+### Task 3: Add a test for `--version` output
+
+The `--version` flag output changes from `0.0.0` to `dev`. Add test coverage.
+
+**Files:**
+- Create: `internal/version/version_test.go`
+
+**Step 1: Write the test**
+
+```go
+package version
+
+import "testing"
+
+func TestVersionDefault(t *testing.T) {
+	if Version == "" {
+		t.Fatal("Version must not be empty")
+	}
+	// Default when built without ldflags is "dev".
+	if Version != "dev" {
+		t.Logf("Version=%q (overridden via ldflags)", Version)
+	}
+}
+```
+
+**Step 2: Run the test**
+
+Run: `go test ./internal/version/...`
+Expected: PASS
+
+**Step 3: No commit yet** — bundle with Task 4.
+
+---
+
+### Task 4: Create `.goreleaser.yaml`
 
 **Files:**
 - Create: `.goreleaser.yaml`
@@ -139,6 +173,8 @@ checksum:
 changelog:
   disable: true
 
+release_notes: RELEASE_NOTES.md
+
 brews:
   - name: kilroy
     repository:
@@ -164,12 +200,19 @@ release:
 
 **Step 2: Validate the config** (requires goreleaser installed; skip if not available)
 
-Run: `goreleaser check 2>&1 || echo "goreleaser not installed, skipping check"`
-Expected: either `config is valid` or the skip message
+Run:
+```bash
+if command -v goreleaser &>/dev/null; then
+  goreleaser check
+else
+  echo "goreleaser not installed, skipping config validation"
+fi
+```
+Expected: `config is valid` if goreleaser is installed, or the skip message if not. If goreleaser IS installed and reports errors, fix the config before proceeding.
 
 ---
 
-### Task 4: Create GitHub Actions release workflow
+### Task 5: Create GitHub Actions release workflow
 
 **Files:**
 - Create: `.github/workflows/release.yml`
@@ -223,7 +266,7 @@ jobs:
 
 ---
 
-### Task 5: Add `/dist/` to `.gitignore`
+### Task 6: Add `/dist/` and `RELEASE_NOTES.md` to `.gitignore`
 
 **Files:**
 - Modify: `.gitignore`
@@ -235,28 +278,31 @@ Add to the end of `.gitignore`:
 ```
 # GoReleaser build output
 /dist/
+# Release notes consumed by goreleaser (written fresh each release)
+/RELEASE_NOTES.md
 ```
 
-**Step 2: Commit Tasks 2-5 together**
+**Step 2: Commit Tasks 2-6 together**
 
 ```bash
-git add internal/version/version.go .goreleaser.yaml .github/workflows/release.yml .gitignore
+git add internal/version/version.go internal/version/version_test.go .goreleaser.yaml .github/workflows/release.yml .gitignore
 git commit -m "feat(release): add goreleaser config, GitHub Actions workflow, and version injection
 
 - internal/version/version.go: change const to var so goreleaser can
   inject the version from the git tag via ldflags. Default is 'dev'
   for local builds.
+- internal/version/version_test.go: test that Version is non-empty.
 - .goreleaser.yaml: cross-platform builds (linux/darwin/windows x
-  amd64/arm64), Homebrew tap (danshapiro/homebrew-kilroy), changelog
-  disabled (release notes are hand-crafted per release skill).
+  amd64/arm64), Homebrew tap (danshapiro/homebrew-kilroy), hand-crafted
+  release notes via RELEASE_NOTES.md.
 - .github/workflows/release.yml: triggered on v* tag push, runs tests
   then goreleaser. Uses HOMEBREW_TAP_GITHUB_TOKEN secret for tap push.
-- .gitignore: exclude goreleaser dist/ output."
+- .gitignore: exclude goreleaser dist/ output and RELEASE_NOTES.md."
 ```
 
 ---
 
-### Task 6: Update release skill for goreleaser workflow
+### Task 7: Update release skill for goreleaser workflow
 
 **Files:**
 - Modify: `skills/release-kilroy/SKILL.md`
@@ -286,8 +332,9 @@ Replace:
 
 With:
 ```
-1. **Update README** with any approved changes (version is injected by goreleaser from the tag — no file to bump)
-2. **Commit** with message like `release: vX.Y.Z`
+1. **Write release notes** to `RELEASE_NOTES.md` in the repo root (following the guidelines above). goreleaser reads this file and publishes it as the GitHub release body.
+2. **Update README** with any approved changes (version is injected by goreleaser from the tag — no file to bump)
+3. **Commit** with message like `release: vX.Y.Z`
 ```
 
 **Step 3: Update "Tag and publish" (step 7)**
@@ -321,19 +368,31 @@ Insert as new step 8 (renumber old 8 to 9):
 
 1. Watch GitHub Actions: https://github.com/danshapiro/kilroy/actions
 2. Confirm the GitHub release has 6 platform archives + checksums.txt
-3. Test Homebrew install:
+3. Confirm the release notes appear on the GitHub release page
+4. Test Homebrew install:
    ```bash
-   brew tap danshapiro/kilroy
-   brew install kilroy
+   brew install danshapiro/kilroy/kilroy
    kilroy --version  # should print the new version
    ```
 ```
 
-**Step 5: No commit yet** — bundle with Task 7.
+**Step 5: Update the Safety section**
+
+In the Safety section at the bottom of the skill, replace:
+```
+- Commit the version bump before tagging so the tag points to the right commit
+```
+
+With:
+```
+- Commit RELEASE_NOTES.md and any README changes before tagging so the tag points to the right commit
+```
+
+**Step 6: No commit yet** — bundle with Task 7.
 
 ---
 
-### Task 7: Update README with Installation section
+### Task 8: Update README with Installation section
 
 **Files:**
 - Modify: `README.md`
@@ -378,7 +437,7 @@ go build -o kilroy ./cmd/kilroy
 ```
 ```
 
-**Step 2: Commit Tasks 6-7 together**
+**Step 2: Commit Tasks 7-8 together**
 
 ```bash
 git add skills/release-kilroy/SKILL.md README.md
