@@ -88,10 +88,8 @@ digraph rogue_spark {
     review [
         shape=box,
         goal_gate=true,
-        prompt="Goal: $goal\n\nReview the Rogue WASM port against the Definition of Done.\n\nRead:\n- .ai/definition_of_done.md for acceptance criteria\n- .ai/spec.md for full requirements\n- .ai/verify_impl.md for build/test results\n- .ai/implementation_log.md for implementation notes\n- demo/rogue/rogue-wasm/src/ for the Rust source\n- demo/rogue/rogue-wasm/www/index.html for the HTML shell\n\nEvaluate each DoD criterion:\n1. Build criteria: Does it compile to WASM? Does wasm-pack succeed?\n2. Runtime criteria: Does the HTML page structure support 80x24 rendering? Are keyboard handlers present? Are all game systems wired up?\n3. Fidelity criteria: Compare critical algorithms against demo/rogue/original-rogue/ — RNG, dungeon gen, combat math, monster stats, item tables. Flag any deviations.\n4. Code quality: Are tests present and passing? Is the code formatted?\n\nFor each criterion, mark PASS or FAIL with specific evidence.\n\nWrite review to .ai/review_final.md with an overall PASS or FAIL verdict.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path), fallback to $KILROY_STAGE_STATUS_FALLBACK_PATH, and do not write nested status.json files.\nWrite status JSON: outcome=pass if all criteria met, outcome=retry with failure_reason listing specific unmet criteria."
+        prompt="Goal: $goal\n\nReview the Rogue WASM port against the Definition of Done.\n\nRead:\n- .ai/definition_of_done.md for acceptance criteria\n- .ai/spec.md for full requirements\n- .ai/verify_impl.md for build/test results\n- .ai/implementation_log.md for implementation notes\n- demo/rogue/rogue-wasm/src/ for the Rust source\n- demo/rogue/rogue-wasm/www/index.html for the HTML shell\n\nEvaluate each DoD criterion:\n1. Build criteria: Does it compile to WASM? Does wasm-pack succeed?\n2. Runtime criteria: Does the HTML page structure support 80x24 rendering? Are keyboard handlers present? Are all game systems wired up?\n3. Fidelity criteria: Compare critical algorithms against demo/rogue/original-rogue/ — RNG, dungeon gen, combat math, monster stats, item tables. Flag any deviations.\n4. Code quality: Are tests present and passing? Is the code formatted?\n\nFor each criterion, mark PASS or FAIL with specific evidence.\n\nWrite review to .ai/review_final.md with an overall PASS or FAIL verdict.\n\nWrite status JSON to $KILROY_STAGE_STATUS_PATH (absolute path), fallback to $KILROY_STAGE_STATUS_FALLBACK_PATH, and do not write nested status.json files.\nWrite status JSON: outcome=success if all criteria met, outcome=retry with failure_reason listing specific unmet criteria."
     ]
-
-    check_review [shape=diamond, label="Review OK?"]
 
     // =========================================================================
     // Postmortem — analyze failure, guide next iteration
@@ -122,9 +120,8 @@ digraph rogue_spark {
     check_impl -> implement    [condition="outcome=fail", label="retry"]
 
     // Review routing
-    review -> check_review
-    check_review -> exit       [condition="outcome=pass"]
-    check_review -> postmortem
+    review -> exit             [condition="outcome=success"]
+    review -> postmortem
 
     // Hill-climbing loop: postmortem -> re-plan -> re-implement -> re-review
     postmortem -> plan [loop_restart=true]
