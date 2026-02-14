@@ -17,7 +17,7 @@ digraph Workflow {
   ];
 
   CheckDoD [
-    node_type="stack.steer", label="Check DoD", shape="diamond", style="rounded,filled",
+    node_type="stack.steer", label="Check DoD", shape="box", style="rounded,filled",
     is_codergen="true", llm_provider="openai", llm_model="gpt-5.2-codex",
     max_agent_turns="2", timeout="120",
     llm_prompt="Check if definition of done provided.\n\nTASK: $task\nDOD: $definition_of_done\n\nWrite status.json with outcome=needs_dod if DOD is empty or just a placeholder, else outcome=has_dod if a real DOD was provided."
