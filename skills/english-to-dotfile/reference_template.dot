@@ -16,6 +16,10 @@ digraph reference_template {
         "
     ]
 
+    // NOTE: Prompts in this template are abbreviated structural stubs.
+    // Generated pipelines must use the full status-file contract from
+    // Phase 4 (fallback path + nested-directory warning).
+
     start [shape=Mdiamond, label="Start"]
     exit  [shape=Msquare, label="Exit"]
 
