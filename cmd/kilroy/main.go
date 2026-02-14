@@ -58,6 +58,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
+	fmt.Fprintln(os.Stderr, "  kilroy --version")
 	fmt.Fprintln(os.Stderr, "  kilroy attractor run [--detach] [--allow-test-shim] [--confirm-stale-build] [--force-model <provider=model>] --graph <file.dot> --config <run.yaml> [--run-id <id>] [--logs-root <dir>]")
 	fmt.Fprintln(os.Stderr, "  kilroy attractor resume --logs-root <dir>")
 	fmt.Fprintln(os.Stderr, "  kilroy attractor resume --cxdb <http_base_url> --context-id <id>")

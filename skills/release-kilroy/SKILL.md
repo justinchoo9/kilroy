@@ -118,9 +118,12 @@ go test ./...
 
 All tests must pass. If any fail, fix them on the release branch before proceeding.
 
-### 3. Run graph validation
+### 3. Build and run graph validation
 
 ```bash
+# Build from the release branch
+go build -o ./kilroy ./cmd/kilroy
+
 # Validate all demo pipelines still parse and pass validation
 for f in demo/**/*.dot; do
   ./kilroy attractor validate --graph "$f" || exit 1

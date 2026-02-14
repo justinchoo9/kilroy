@@ -451,6 +451,33 @@ func runKilroyInDir(t *testing.T, dir string, bin string, args ...string) (exitC
 	return ee.ExitCode(), string(out)
 }
 
+func TestVersion_PrintsVersionAndExitsZero(t *testing.T) {
+	bin := buildKilroyBinary(t)
+
+	for _, flag := range []string{"--version", "-v", "version"} {
+		t.Run(flag, func(t *testing.T) {
+			code, out := runKilroy(t, bin, flag)
+			if code != 0 {
+				t.Fatalf("exit code: got %d want 0\n%s", code, out)
+			}
+			if !strings.Contains(out, "kilroy dev") {
+				t.Fatalf("expected version output to contain 'kilroy dev', got:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestUsage_IncludesVersionFlag(t *testing.T) {
+	bin := buildKilroyBinary(t)
+	code, out := runKilroy(t, bin)
+	if code != 1 {
+		t.Fatalf("exit code: got %d want 1\n%s", code, out)
+	}
+	if !strings.Contains(out, "--version") {
+		t.Fatalf("usage should include --version; output:\n%s", out)
+	}
+}
+
 func TestKilroyAttractorExitCodes(t *testing.T) {
 	cxdbSrv := newCXDBTestServer(t)
 	bin := buildKilroyBinary(t)
