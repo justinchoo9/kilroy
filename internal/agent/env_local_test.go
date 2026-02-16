@@ -66,7 +66,7 @@ func TestLocalExecutionEnvironment_ExecCommand_ContextCancel_KillsProcessGroup(t
 func TestFilteredEnv_ExcludesSensitiveVars(t *testing.T) {
 	t.Setenv("MY_API_KEY", "secret")
 	t.Setenv("MY_SECRET", "secret2")
-	env := filteredEnv(nil)
+	env := filteredEnv(nil, nil)
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "MY_API_KEY=") || strings.HasPrefix(kv, "MY_SECRET=") {
 			t.Fatalf("sensitive env var leaked: %q", kv)
