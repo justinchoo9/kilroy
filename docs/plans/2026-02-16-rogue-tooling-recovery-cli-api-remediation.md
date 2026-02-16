@@ -49,7 +49,6 @@ import (
 )
 
 func TestBuildAgentLoopOverrides_UsesBaseNodeEnvContract(t *testing.T) {
-	t.Setenv("CARGO_TARGET_DIR", "")
 	t.Setenv("CLAUDECODE", "1")
 	_ = os.Unsetenv("CARGO_TARGET_DIR")
 	worktree := t.TempDir()
@@ -128,13 +127,15 @@ func buildAgentLoopOverrides(worktreeDir string, contractEnv map[string]string) 
 }
 ```
 
+This helper intentionally bridges engine env format (`[]string`) to agent overlay format (`map[string]string`).
+
 **Step 2: Add explicit strip-key support to local execution environment**
 
 In `internal/agent/env_local.go`:
 - add `StripEnvKeys []string` to `LocalExecutionEnvironment`
 - add constructor `NewLocalExecutionEnvironmentWithPolicy(rootDir string, baseEnv map[string]string, stripKeys []string)`
 - keep `NewLocalExecutionEnvironmentWithBaseEnv` as wrapper to preserve callers
-- update `filteredEnv(...)` to remove strip keys from inherited env and from extra env maps.
+- update `filteredEnv(...)` signature to accept strip keys, and remove strip keys from both inherited `os.Environ()` entries and extra env maps.
 
 **Step 3: Wire `runAPI(..., mode=agent_loop)` to helper + strip policy**
 
@@ -216,7 +217,6 @@ Set defaults in `applyConfigDefaults`:
 ```go
 if len(cfg.Git.CheckpointExcludeGlobs) == 0 {
 	cfg.Git.CheckpointExcludeGlobs = []string{
-		".cargo-target/**",
 		"**/.cargo-target*/**",
 		"**/.cargo_target*/**",
 		"**/.wasm-pack/**",
@@ -229,7 +229,12 @@ Do **not** add broad defaults like `**/target/**` or `**/pkg/**`; those can hide
 
 **Step 4: Use exclusion list in checkpoint path**
 
-In `engine.checkpoint(...)`, replace raw commit helper call with staging that honors configured globs before commit.
+In `engine.checkpoint(...)`, replace raw commit helper call with explicit exclude-aware commit API.
+Implement one of:
+- `CommitAllowEmptyWithExcludes(worktreeDir, message string, excludes []string) (string, error)`, or
+- split commit into `AddAllWithExcludes(...)` + `CommitOnlyAllowEmpty(...)`.
+
+Recommended: `CommitAllowEmptyWithExcludes(...)` to keep checkpoint callsites simple and preserve old helper behavior for non-checkpoint callers.
 
 **Step 5: Add engine test proving excluded artifacts are not checkpointed**
 
@@ -289,6 +294,8 @@ if err := json.Unmarshal(b, &raw); err == nil {
 	}
 }
 ```
+
+Placement requirement: run this promotion in the canonical parse path **after** successful `json.Unmarshal(b, &o)` and **before** returning `o.Canonicalize()`.
 
 **Step 3: Implement signature override in cycle-breaker keying**
 
