@@ -169,3 +169,22 @@ func TestLocalExecutionEnvironment_ExecCommand_MergesBaseEnvAndCallEnv(t *testin
 		t.Fatalf("stdout: got %q want %q", got, want)
 	}
 }
+
+func TestLocalExecutionEnvironment_ExecCommand_StripsConfiguredEnvKeys(t *testing.T) {
+	t.Setenv("CLAUDECODE", "1")
+	env := NewLocalExecutionEnvironmentWithPolicy(
+		t.TempDir(),
+		map[string]string{"BASE_ONLY": "base"},
+		[]string{"CLAUDECODE"},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := env.ExecCommand(ctx, "printf '%s' \"${CLAUDECODE:-}\"", 5_000, "", nil)
+	if err != nil {
+		t.Fatalf("ExecCommand: %v (res=%+v)", err, res)
+	}
+	if got := strings.TrimSpace(res.Stdout); got != "" {
+		t.Fatalf("CLAUDECODE leaked into child process: %q", got)
+	}
+}
