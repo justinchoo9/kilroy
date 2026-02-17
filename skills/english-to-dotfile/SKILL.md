@@ -289,43 +289,47 @@ Canonical values:
 
 Custom outcomes are allowed if prompts define them explicitly and edges route with `condition="outcome=<value>"`.
 
-## Common Mistakes and Fixes
+## Anti-Patterns
 
-1. Emitting non-DOT text in programmatic mode.
-- Fix: final output must be raw `digraph` only.
-
-2. Asking users to pick options in non-interactive contexts.
-- Fix: default to medium and continue.
-
-3. Ignoring explicit `no fanout` constraints.
-- Fix: emit single-path topology only.
-
-4. Missing provider resolution on box nodes.
-- Fix: ensure stylesheet or node attrs resolve `llm_provider` + `llm_model`.
-
-5. Using labels instead of conditions for routing.
-- Fix: route with `condition="outcome=..."`, not `label="success"`.
-
-6. Allowing unguarded fail restarts in inner loops.
-- Fix: restart only on `context.failure_class=transient_infra`; route deterministic failures elsewhere.
-
-7. Missing status-file contract in prompts.
-- Fix: always include stage status path + fallback + no nested status files.
-
-8. Dangling artifact reads.
-- Fix: every `.ai/*` read must have an upstream producer or repo-source justification.
-
-9. Unscoped lint/build checks that fail on unrelated repo issues.
-- Fix: lint changed files via `$base_sha`; scope required checks to target module/project.
-
-10. Shipping unresolved model placeholders.
-- Fix: replace placeholders with concrete model/provider assignments before emit.
-
-11. Running code-writing fan-out in shared scope by default.
-- Fix: keep implementation single-writer unless user explicitly requests isolated fan-out.
-
-12. Overengineering topology from scratch.
-- Fix: start from `reference_template.dot` and make minimal edits.
+1. **No verification after implementation (in build pipelines).** Every impl node that produces code MUST have a verify node after it. Never chain impl -> impl -> impl. Exception: analytical/triage nodes in non-build workflows may use the 2-node pattern.
+2. **Labels instead of conditions.** `[label="success"]` does NOT route. Use `[condition="outcome=success"]`.
+3. **All failures -> exit.** Failure edges must loop back to the implementation node for retry, not to exit.
+4. **Multiple exit nodes.** Exactly one `shape=Msquare` node. Route failures through conditionals, not separate exits.
+5. **Prompts without outcome instructions.** Every prompt must tell the agent what to write in status.json.
+6. **Inlining the spec.** Reference the spec file by path. Don't copy it into prompt attributes. Exception: `expand_spec` node bootstraps the spec.
+7. **Missing graph attributes.** Always set `goal`, `model_stylesheet`, `default_max_retry`.
+8. **Wrong shapes.** Start must be `Mdiamond`. Exit must be `Msquare`.
+9. **Unnecessary timeouts.** Do NOT add timeouts to simple impl/verify nodes in linear pipelines; do add timeouts to looping/external-service nodes.
+10. **Build files after implementation.** Project setup (module file, directory structure) must be the first implementation node.
+11. **Catastrophic review rollback.** In inner repair loops, do not route failure directly back to earliest setup nodes; use late-stage repair or outer postmortem/re-plan loops.
+12. **Missing verify class.** Every verify node MUST have `class="verify"` so the stylesheet applies intended verify model/thinking.
+13. **Missing expand_spec for vague input.** If no spec file exists in the repo, include `expand_spec`.
+14. **Hardcoding language commands.** Use language-appropriate build/test/lint commands.
+15. **Missing file-based handoff.** Produce/consume named `.ai/` artifacts for substantial inter-node data.
+16. **Binary-only outcomes in steering nodes.** Use custom outcomes when workflows need >2 paths.
+17. **Unscoped Go monorepo checks.** Do not require repo-wide `go build ./...`, `go vet ./...`, or `go test ./...` by default.
+18. **Unscoped lint in verify nodes.** Do not run repo-wide lint in verify nodes; lint changed files using `git diff --name-only $base_sha`.
+19. **Overly aggressive API preflight timeouts in run config.** Use `preflight.prompt_probes.timeout_ms: 60000` baseline for real-provider runs.
+20. **Missing toolchain readiness gates for non-default dependencies.** Add an early `shape=parallelogram` prerequisite check node.
+21. **Auto-install bootstrap without explicit user opt-in (interactive mode).** Do not silently add installer commands.
+22. **Toolchain checks with no bootstrap path (when auto-install is intended).** If self-prepare is intended, include idempotent `setup.commands`.
+23. **Unguarded failure restarts in inner retry loops.** Do not set `loop_restart=true` on broad `outcome=fail`; guard restart with `context.failure_class=transient_infra`.
+24. **Local CXDB configs without launcher autostart.** In this repo, don't emit local CXDB configs that omit `cxdb.autostart` launcher wiring.
+25. **Non-canonical fail payloads.** Do not emit fail/retry outcomes without both `failure_reason` and `details`.
+26. **Artifact pollution in feature diffs.** Do not allow build/cache/temp/backup artifacts unless explicitly required.
+27. **Overlapping fan-out write scopes.** Do not let parallel branches modify shared/core files; reserve shared edits for post-fan-in integration.
+28. **Using `outcome=pass` as goal-gate terminal success.** For `goal_gate=true`, route terminal success via `outcome=success` or `outcome=partial_success`.
+29. **`reasoning_effort` on Cerebras GLM 4.7.** Do not expect `reasoning_effort` to control GLM 4.7 reasoning depth.
+30. **Parallel code-writing in a shared worktree (default disallowed).** Keep implementation single-writer unless explicit isolated fan-out is requested.
+31. **Generating DOTs from scratch when a validated template exists.** Start from `skills/english-to-dotfile/reference_template.dot` and make minimal edits.
+32. **Ad-hoc turn budgets.** Do not add `max_agent_turns` by default.
+33. **Putting prompts on diamond nodes.** `shape=diamond` nodes do not execute prompts; use `shape=box` for LLM steering decisions.
+34. **Defaulting to visit-count loop breakers.** Do not add visit-count controls as the default loop guardrail.
+35. **Unresolved model placeholders in final DOT output.** Do not emit placeholders like `DEFAULT_MODEL` in production DOT.
+36. **Dangling artifact reads.** Do not reference `.ai/*` paths unless produced earlier or explicitly provided by repo input.
+37. **Unconditional failure edges from `check_*` nodes in iterative workflows.** Keep explicit failure-class-conditioned routes.
+38. **Ignoring explicit no-fanout constraints.** If user requests no fanout/single-path, do not emit branch families/fan-in nodes.
+39. **Interactive option prompts in programmatic mode.** In `kilroy attractor ingest` and other non-interactive generation, do not ask for low/medium/high; default to medium and output DOT.
 
 ## Final Pre-Emit Checklist
 
