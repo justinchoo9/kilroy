@@ -48,6 +48,10 @@ type RunOptions struct {
 	// Allows explicit opt-in for test-shim CLI execution profile.
 	AllowTestShim bool
 
+	// When true, skip CXDB startup entirely. eng.CXDB remains nil;
+	// all downstream consumers already nil-check before use.
+	DisableCXDB bool
+
 	// Optional provider-level model overrides (provider -> model id).
 	// When set, the forced model is used for execution and bypasses model-catalog
 	// membership validation for that provider.
@@ -1664,13 +1668,31 @@ func parseInt(s string, def int) int {
 }
 
 func defaultLogsRoot(runID string) string {
-	base := os.Getenv("XDG_STATE_HOME")
+	base := strings.TrimSpace(os.Getenv("XDG_STATE_HOME"))
 	if base == "" {
-		home := os.Getenv("HOME")
+		home := strings.TrimSpace(os.Getenv("HOME"))
 		if home == "" {
-			base = "."
+			if h, err := os.UserHomeDir(); err == nil {
+				home = strings.TrimSpace(h)
+			}
+		}
+		if home == "" {
+			// Last-resort fallback: use an absolute directory so relative
+			// worktree paths behave consistently across git invocations.
+			if wd, err := os.Getwd(); err == nil && strings.TrimSpace(wd) != "" {
+				base = wd
+			} else if abs, err := filepath.Abs("."); err == nil {
+				base = abs
+			} else {
+				base = "."
+			}
 		} else {
 			base = filepath.Join(home, ".local", "state")
+		}
+	}
+	if !filepath.IsAbs(base) {
+		if abs, err := filepath.Abs(base); err == nil {
+			base = abs
 		}
 	}
 	return filepath.Join(base, "kilroy", "attractor", "runs", runID)

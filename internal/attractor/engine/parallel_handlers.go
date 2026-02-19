@@ -88,7 +88,14 @@ func (h *ParallelHandler) Execute(ctx context.Context, exec *Execution, node *mo
 		return runtime.Outcome{Status: runtime.StatusFail, FailureReason: "parallel node has no outgoing edges"}, nil
 	}
 
-	joinID, err := findJoinFanInNode(exec.Graph, branches)
+	// Allow explicit parallel fan-out nodes (shape=component) to converge on either:
+	// - An explicit fan-in node (shape=tripleoctagon), or
+	// - Any other topological convergence node (e.g. a consolidate box).
+	//
+	// This supports "map then reduce" patterns where the reducer node should
+	// run once after all branches complete, without invoking FanInHandler
+	// winner-selection behavior.
+	joinID, err := findJoinNode(exec.Graph, branches)
 	if err != nil {
 		return runtime.Outcome{Status: runtime.StatusFail, FailureReason: err.Error()}, nil
 	}

@@ -185,12 +185,13 @@ func TestRunToolHook_ReadsStdin(t *testing.T) {
 	stageDir := t.TempDir()
 	// The hook echoes stdin to a file so we can verify it was passed.
 	outPath := filepath.Join(stageDir, "stdin_capture.txt")
-	hookCmd := "cat > " + outPath
+	// Use a relative path and run in stageDir so bash redirection works on Windows too.
+	hookCmd := "cat > stdin_capture.txt"
 	stdinJSON := `{"tool_name":"test","hook_type":"pre"}`
 	exitCode, err := runToolHook(
 		context.Background(),
 		hookCmd,
-		"",
+		stageDir,
 		os.Environ(),
 		stdinJSON,
 		stageDir,

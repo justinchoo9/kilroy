@@ -41,7 +41,7 @@ digraph reference_template {
         expand_spec [
             shape=box,
             auto_status=true,
-            prompt="Goal: $goal\n\nExpand the requirements into a detailed spec.\n\nWrite the spec to .ai/spec.md."
+            prompt="Goal: $goal\n\nCreate or reuse a canonical spec at .ai/spec.md.\n\nStep 1 (reuse first): If .ai/spec.md already exists and is a real spec (not a placeholder), keep its meaning. You may do form-only cleanup (headings/whitespace) if needed.\n\nStep 2 (reuse repo spec): If the repo already contains an adequate spec/requirements doc (for example under docs/, a requirements/spec file, or a detailed README section), prefer reusing it. If downstream nodes expect .ai/spec.md, copy that content verbatim into .ai/spec.md (form-only formatting allowed).\n\nStep 3 (expand): Otherwise, expand $goal into a spec with sections:\n- Overview\n- Scope (in/out)\n- Constraints\n- Assumptions\n- Acceptance Criteria\n- Verification\n- Non-goals/Deferrals\n\nWrite the result to .ai/spec.md."
         ]
 
         // DoD routing - skip DoD generation on loop iterations

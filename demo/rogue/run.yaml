@@ -5,15 +5,16 @@ graph: rogue.dot
 task: "Port Rogue 5.4.4 from C to Rust/WebAssembly: faithful 1:1 mechanical translation of all game systems, playable in browser"
 
 repo:
-  path: /home/user/code/kilroy
+  path: C:/codelocal/kilroy
 
 cxdb:
   binary_addr: 127.0.0.1:9009
   http_base_url: http://127.0.0.1:9010
   autostart:
-    enabled: true
+    enabled: false
     command:
-      - /home/user/code/kilroy/scripts/start-cxdb.sh
+      - bash
+      - C:/codelocal/kilroy/scripts/start-cxdb.sh
     wait_timeout_ms: 60000
     poll_interval_ms: 250
     ui:
@@ -34,6 +35,15 @@ llm:
       backend: cli
       cli:
         binary: gemini
+    minimax:
+      backend: api
+      failover: [kimi]
+      api:
+        protocol: openai_chat_completions
+        api_key_env: MINIMAX_API_KEY
+        base_url: https://api.minimax.io
+        path: /v1/chat/completions
+        profile_family: openai
     kimi:
       backend: api
       failover: [zai]
@@ -54,7 +64,7 @@ llm:
         profile_family: openai
 
 modeldb:
-  openrouter_model_info_path: /home/user/code/kilroy/internal/attractor/modeldb/pinned/openrouter_models.json
+  openrouter_model_info_path: C:/codelocal/kilroy/internal/attractor/modeldb/pinned/openrouter_models.json
   openrouter_model_info_update_policy: on_run_start
   openrouter_model_info_url: https://openrouter.ai/api/v1/models
   openrouter_model_info_fetch_timeout_ms: 10000
@@ -84,7 +94,7 @@ runtime_policy:
 preflight:
   prompt_probes:
     enabled: true
-    transports: [complete, stream]
+    transports: [complete]
     timeout_ms: 60000
     retries: 1
     base_delay_ms: 500

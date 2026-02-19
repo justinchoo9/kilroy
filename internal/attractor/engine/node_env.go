@@ -6,6 +6,14 @@ import (
 	"strings"
 )
 
+const (
+	runIDEnvKey        = "KILROY_RUN_ID"
+	nodeIDEnvKey       = "KILROY_NODE_ID"
+	logsRootEnvKey     = "KILROY_LOGS_ROOT"
+	stageLogsDirEnvKey = "KILROY_STAGE_LOGS_DIR"
+	worktreeDirEnvKey  = "KILROY_WORKTREE_DIR"
+)
+
 // toolchainEnvKeys are environment variables that locate build toolchains
 // (Rust, Go, etc.) relative to HOME. When a handler overrides HOME (e.g.,
 // codex isolation), these must be pinned to their original absolute values
@@ -99,6 +107,60 @@ func stripEnvKey(env []string, key string) []string {
 		out = append(out, entry)
 	}
 	return out
+}
+
+// buildStageRuntimeEnv returns stable per-stage environment variables that
+// help codergen/tool nodes find their run-local state (logs, worktree, etc.).
+func buildStageRuntimeEnv(execCtx *Execution, nodeID string) map[string]string {
+	out := map[string]string{}
+	if execCtx == nil {
+		return out
+	}
+	if execCtx.Engine != nil {
+		if runID := strings.TrimSpace(execCtx.Engine.Options.RunID); runID != "" {
+			out[runIDEnvKey] = runID
+		}
+	}
+	if id := strings.TrimSpace(nodeID); id != "" {
+		out[nodeIDEnvKey] = id
+	}
+	if logsRoot := strings.TrimSpace(execCtx.LogsRoot); logsRoot != "" {
+		out[logsRootEnvKey] = logsRoot
+		if id := strings.TrimSpace(nodeID); id != "" {
+			out[stageLogsDirEnvKey] = filepath.Join(logsRoot, id)
+		}
+	}
+	if worktree := strings.TrimSpace(execCtx.WorktreeDir); worktree != "" {
+		out[worktreeDirEnvKey] = worktree
+	}
+	return out
+}
+
+func buildStageRuntimePreamble(execCtx *Execution, nodeID string) string {
+	if execCtx == nil {
+		return ""
+	}
+	runID := ""
+	if execCtx.Engine != nil {
+		runID = strings.TrimSpace(execCtx.Engine.Options.RunID)
+	}
+	logsRoot := strings.TrimSpace(execCtx.LogsRoot)
+	worktree := strings.TrimSpace(execCtx.WorktreeDir)
+	stageDir := ""
+	if logsRoot != "" && strings.TrimSpace(nodeID) != "" {
+		stageDir = filepath.Join(logsRoot, strings.TrimSpace(nodeID))
+	}
+	if runID == "" && logsRoot == "" && stageDir == "" && worktree == "" && strings.TrimSpace(nodeID) == "" {
+		return ""
+	}
+	return strings.TrimSpace(
+		"Execution context:\n"+
+			"- $"+runIDEnvKey+"="+runID+"\n"+
+			"- $"+logsRootEnvKey+"="+logsRoot+"\n"+
+			"- $"+stageLogsDirEnvKey+"="+stageDir+"\n"+
+			"- $"+worktreeDirEnvKey+"="+worktree+"\n"+
+			"- $"+nodeIDEnvKey+"="+strings.TrimSpace(nodeID)+"\n",
+	)
 }
 
 // buildAgentLoopOverrides extracts the subset of base-node environment

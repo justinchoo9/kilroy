@@ -192,31 +192,36 @@ func RunWithConfig(ctx context.Context, dotSource []byte, cfg *RunConfigFile, ov
 		return nil, err
 	}
 
-	// CXDB is required in v1 and must be reachable.
-	cxdbClient, bin, startup, err := ensureCXDBReady(ctx, cfg, opts.LogsRoot, opts.RunID)
-	if err != nil {
-		return nil, err
+	var sink *CXDBSink
+	var startup *CXDBStartupInfo
+	if !overrides.DisableCXDB {
+		// CXDB is required in v1 and must be reachable.
+		cxdbClient, bin, cxdbStartup, err := ensureCXDBReady(ctx, cfg, opts.LogsRoot, opts.RunID)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = bin.Close() }()
+		startup = cxdbStartup
+		if startup != nil {
+			// Defer process shutdown after bin close is deferred so shutdown runs first (LIFO).
+			defer func() { _ = startup.shutdownManagedProcesses() }()
+		}
+		if startup != nil && overrides.OnCXDBStartup != nil {
+			overrides.OnCXDBStartup(startup)
+		}
+		bundleID, bundle, _, err := cxdb.KilroyAttractorRegistryBundle()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := cxdbClient.PublishRegistryBundle(ctx, bundleID, bundle); err != nil {
+			return nil, err
+		}
+		ci, err := createContextWithFallback(ctx, cxdbClient, bin)
+		if err != nil {
+			return nil, err
+		}
+		sink = NewCXDBSink(cxdbClient, bin, opts.RunID, ci.ContextID, ci.HeadTurnID, bundleID)
 	}
-	defer func() { _ = bin.Close() }()
-	if startup != nil {
-		// Defer process shutdown after bin close is deferred so shutdown runs first (LIFO).
-		defer func() { _ = startup.shutdownManagedProcesses() }()
-	}
-	if startup != nil && overrides.OnCXDBStartup != nil {
-		overrides.OnCXDBStartup(startup)
-	}
-	bundleID, bundle, _, err := cxdb.KilroyAttractorRegistryBundle()
-	if err != nil {
-		return nil, err
-	}
-	if _, err := cxdbClient.PublishRegistryBundle(ctx, bundleID, bundle); err != nil {
-		return nil, err
-	}
-	ci, err := createContextWithFallback(ctx, cxdbClient, bin)
-	if err != nil {
-		return nil, err
-	}
-	sink := NewCXDBSink(cxdbClient, bin, opts.RunID, ci.ContextID, ci.HeadTurnID, bundleID)
 
 	eng := newBaseEngine(g, dotSource, opts)
 	eng.Registry = reg // reuse the registry from validation (avoids creating a duplicate)

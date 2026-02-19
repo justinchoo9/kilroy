@@ -67,7 +67,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
 	fmt.Fprintln(os.Stderr, "  kilroy --version")
-	fmt.Fprintln(os.Stderr, "  kilroy attractor run [--detach] [--allow-test-shim] [--confirm-stale-build] [--force-model <provider=model>] --graph <file.dot> --config <run.yaml> [--run-id <id>] [--logs-root <dir>]")
+	fmt.Fprintln(os.Stderr, "  kilroy attractor run [--detach] [--allow-test-shim] [--confirm-stale-build] [--no-cxdb] [--force-model <provider=model>] --graph <file.dot> --config <run.yaml> [--run-id <id>] [--logs-root <dir>]")
 	fmt.Fprintln(os.Stderr, "  kilroy attractor resume --logs-root <dir>")
 	fmt.Fprintln(os.Stderr, "  kilroy attractor resume --cxdb <http_base_url> --context-id <id>")
 	fmt.Fprintln(os.Stderr, "  kilroy attractor resume --run-branch <attractor/run/...> [--repo <path>]")
@@ -112,6 +112,7 @@ func attractorRun(args []string) {
 	var detach bool
 	var allowTestShim bool
 	var confirmStaleBuild bool
+	var noCXDB bool
 	var skipCLIHeadlessWarning bool
 	var forceModelSpecs []string
 
@@ -123,6 +124,8 @@ func attractorRun(args []string) {
 			allowTestShim = true
 		case "--confirm-stale-build":
 			confirmStaleBuild = true
+		case "--no-cxdb":
+			noCXDB = true
 		case skipCLIHeadlessWarningFlag:
 			skipCLIHeadlessWarning = true
 		case "--force-model":
@@ -231,6 +234,9 @@ func attractorRun(args []string) {
 		if confirmStaleBuild {
 			childArgs = append(childArgs, "--confirm-stale-build")
 		}
+		if noCXDB {
+			childArgs = append(childArgs, "--no-cxdb")
+		}
 		childArgs = append(childArgs, skipCLIHeadlessWarningFlag)
 		for _, spec := range canonicalForceSpecs {
 			childArgs = append(childArgs, "--force-model", spec)
@@ -268,6 +274,7 @@ func attractorRun(args []string) {
 		RunID:         runID,
 		LogsRoot:      logsRoot,
 		AllowTestShim: allowTestShim,
+		DisableCXDB:   noCXDB,
 		ForceModels:   forceModels,
 		OnCXDBStartup: func(info *engine.CXDBStartupInfo) {
 			if info == nil {

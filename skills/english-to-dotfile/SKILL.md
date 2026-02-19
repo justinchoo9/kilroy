@@ -49,6 +49,16 @@ Do not use this skill when:
 5. Honor explicit topology constraints.
 - If user says `no fanout` or `single path`, do not emit fan-out/fan-in branches.
 
+6. Treat user-provided `goal`/spec/DoD as authoritative when explicitly labeled.
+- If the user says “this is the goal/spec/DoD” (or provides a file path and declares it is the spec/DoD), use it verbatim. Do not rewrite, summarize, “clean up”, or normalize punctuation/whitespace.
+- For DOT embedding, escape only as required by DOT string syntax so the **rendered text content** is identical to what the user provided.
+- If the provided text is incomplete, keep it verbatim and create a separate “gaps/assumptions” artifact rather than rewriting the source text.
+
+7. Ensure `expand_spec` receives the user’s full input verbatim.
+- When generating a DOT graph from user text (especially transcripts), include the **entire user-provided input** verbatim in the `expand_spec` prompt under clear delimiters.
+- Do not summarize, rephrase, or “clean up” the user’s input in this verbatim block (DOT-escape only).
+- If the user explicitly provides a spec/DoD as a repo file path, `expand_spec` should read the file as the authoritative source; still include the original user message verbatim so the spec derivation is auditable.
+
 ## Workflow
 
 ### Phase 0: Determine Execution Mode and Constraints
@@ -92,8 +102,9 @@ Constraint fast path (`no fanout`):
 - Do not include `plan_a/b/c`, `review_a/b/c`, `component`, or `tripleoctagon` nodes.
 
 Spec source rule:
-- If user provides an existing spec path in repo, reference that path directly.
-- If requirements are vague and no spec exists, include `expand_spec` early so runtime nodes can create `.ai/spec.md`.
+- Prefer an existing spec source (a user-provided path, `docs/`, etc.).
+  - Either wire downstream prompts to read it directly, or copy it verbatim into the canonical `.ai/spec.md` via `expand_spec` so the rest of the pipeline has a stable path.
+- If no adequate spec exists, include `expand_spec` early. Make it idempotent: reuse an adequate `.ai/spec.md` if present (optionally do form-only cleanup when it is not explicitly user-declared verbatim); otherwise generate it from `$goal` + repo evidence.
 
 Loop and routing rules:
 - Keep explicit outcome-based conditions (`outcome=...`).
@@ -106,7 +117,7 @@ Loop and routing rules:
 Attractor’s retry and cycle-breaking semantics depend on `failure_class` (see `docs/strongdm/attractor/attractor-spec.md`).
 
 Use these definitions:
-- **Deterministic** (`failure_class=deterministic`): Re-running the same node with the same inputs will not succeed. Examples: tests failing due to incorrect code, compilation errors due to code changes, missing required files, invalid config, auth/permission errors, invalid request/model-not-found.
+- **Deterministic** (`failure_class=deterministic`): The failure is not expected to be resolved by automatic retry/backoff; it requires a different approach or changed inputs (code/config/graph/prompt/context). This is about *retryability*, not whether the underlying system is probabilistic. Examples: tests failing due to incorrect code, compilation errors, missing required files, invalid config, auth/permission errors, invalid request/model-not-found, LLM-generated changes that fail build/tests and need repair.
 - **Transient infra** (`failure_class=transient_infra`): A wait-and-retry might succeed. Examples: rate limits, timeouts, network errors, provider 5xx/unavailability.
 - **Structural** (`failure_class=structural`): The pipeline/graph itself is broken (usually caught by validation). Examples: missing start/exit, invalid condition syntax, missing required node attributes.
 - **Canceled** (`failure_class=canceled`): The run was canceled; do not treat as retryable or as a deterministic cycle signal.
@@ -114,12 +125,17 @@ Use these definitions:
 - **Compilation loop** (`failure_class=compilation_loop`): Repeated build/test failure patterns that indicate an unproductive loop; only retry if you change approach (repair/escalate), not by blind restart.
 
 Heuristic:
-- If success is plausible after waiting/retrying, it’s usually `transient_infra`.
-- If success requires changing code/config/graph/prompt/context, it’s usually `deterministic` (or `structural` for pipeline-definition problems).
+- If success is plausible after waiting/retrying the same action, it’s usually `transient_infra`.
+- If success requires changing code/config/graph/prompt/context, it’s usually `deterministic` (or `structural` for pipeline-definition problems), even if the LLM could “get lucky” on a re-run.
+
+Common hill-climbing case (“good work, not done yet — keep going”):
+- Prefer modeling “needs another iteration” as `status=fail` with a non-transient `failure_class` (usually `deterministic`, sometimes `compilation_loop`), then route to repair/postmortem/re-plan nodes that drive the next attempt.
+- Avoid using `status=retry` for hill-climbing loops unless you explicitly want the engine to immediately re-run the *same node* via the retry policy (as opposed to routing to a different node for repair).
+- `failure_class` is only relevant when `status=fail` or `status=retry`; `status=success` should proceed normally.
 
 Routing implications:
-- Only use `loop_restart=true` on edges that are guarded by `context.failure_class=transient_infra`.
-- Always provide a non-restart failure path for deterministic/structural failures (repair/postmortem/re-plan), so the pipeline doesn’t “spin” on permanent errors.
+- Use `loop_restart=true` only for “wipe the run and start fresh” recovery, and only when the failure is clearly retryable infra (`context.failure_class=transient_infra`).
+- For everything else (especially `deterministic` and `structural`), route to a non-restart repair loop (postmortem/re-plan/implement) so the next attempt makes progress instead of restarting blindly.
 
 Guardrails:
 - Do not set `allow_partial=true` on the primary implementation node in the hill-climbing profile.
@@ -201,9 +217,68 @@ Handoff rules:
 - Use `.ai/*` files for substantial inter-node artifacts (plans, reviews, postmortems).
 - Keep file reads/writes consistent: every read path must have an upstream producer or explicit repo-source justification.
 
+### Goal (`graph.goal` / `$goal`) Contract (Required)
+
+In Attractor, the graph-level `goal` attribute is:
+- Exposed as `$goal` in node prompts via simple string replacement (the only built-in prompt variable).
+- Mirrored into the run context as `graph.goal`.
+
+Therefore, `$goal` is the primary “source of truth” for what the pipeline is trying to do.
+
+How to create `goal` optimally:
+1. **If the user explicitly provides it as the goal:** use it verbatim (escape only as required for DOT).
+2. **Otherwise, write it as a noun phrase describing the thing/outcome**, not a command or a full sentence. This avoids awkward prompts when `$goal` is pasted into sentences (for example “Create a plan for $goal”).
+   - Bad: “We'll build a calculator.”
+   - Good: “a Python-based calculator app for blind students taking high school math”
+3. **Make it durable for the whole graph.** Because `goal` is graph-level (not node-level), every node may reference the same text. Avoid ephemeral, step-specific goals.
+   - Bad: “Fix the bug in line 40 first.”
+   - Good: “a login system that handles empty passwords gracefully.”
+4. **Prompt phrasing should assume noun-phrase goals.** Prefer prompt templates like “Create a plan for $goal” / “Implement $goal”. If an explicitly user-provided goal is not a noun phrase, avoid grammar-dependent prompt patterns and use a neutral preface like `Goal: $goal` at the top of the prompt.
+
+Implementation note (important):
+- If the user did not provide a goal, derive `graph.goal` during DOT generation (ingest/skill time) from the provided materials + repo evidence.
+- Do not design a runtime pipeline that “computes `$goal` after `expand_spec`” — `$goal` is graph-level and static during execution.
+
+Goal adequacy rubric (keep it short, but complete enough to drive `expand_spec`):
+- States the deliverable/outcome (“what exists when done”) and the repo/location it applies to (path/module/service if known).
+- May include durable high-level scope/non-goals if they are truly objective-defining.
+- Do **not** encode topology or execution constraints in `$goal` (for example `no fanout`, provider/model routing, CLI-vs-API). Those belong in the DOT structure and/or the spec.
+- Avoids turning into a full spec or an implementation plan. Detailed requirements belong in `.ai/spec.md`.
+
+### Spec Expansion (`expand_spec`) Contract (Required when no adequate spec file exists)
+
+The pipeline should converge on a canonical, file-based spec that downstream nodes can read (default: `.ai/spec.md`).
+
+Template alignment:
+- The reference template assumes downstream nodes read `.ai/spec.md`. If you choose a different spec path, update all downstream prompts consistently.
+- After `expand_spec` runs, downstream nodes should treat `.ai/spec.md` as the authoritative spec (not `$goal`).
+
+Behavior requirements for `expand_spec`:
+1. **Reuse first:** If a spec already exists (for example `.ai/spec.md` or a user-provided path), prefer reusing it.
+   - If the user explicitly labeled the spec (“this is the spec”), copy/use it verbatim (no rewriting). If a canonical path is needed, copy it verbatim into `.ai/spec.md`.
+   - If the spec exists but is messy, do form-only cleanup (headings/whitespace) without changing meaning.
+2. **Expand only when needed:** If the available spec is missing critical information, create a separate addendum (for example `.ai/spec_gaps.md`) listing gaps and assumptions. Do not overwrite a user-declared verbatim spec.
+3. **If no spec exists at all:** Expand `$goal` into `.ai/spec.md` with explicit assumptions and verification notes.
+
+Verbatim input requirement:
+- The `expand_spec` prompt MUST include a delimited verbatim block containing the user’s full input (including transcripts). This ensures spec writing has access to all requirements even when `graph.goal` is derived and compact.
+
+Spec adequacy rubric (minimum):
+- Scope (in/out), assumptions, constraints.
+- Deliverables and acceptance criteria (observable pass/fail).
+- Verification approach (commands/steps appropriate to the repo).
+- Non-goals/deferrals.
+
+Spec placement note:
+- This is where constraints belong (for example provider/model requirements, “no fanout/single path”, platform constraints, budget/time constraints). Keep `$goal` as the durable noun-phrase objective; keep constraints in the spec and/or DOT topology.
+
 ### Definition Of Done (DoD) Rubric (Required)
 
 In Kilroy attractor pipelines, the project DoD is the acceptance contract for the whole iteration. It must be strong enough to prevent "looks done" failures, but general enough that it does not proscribe an implementation path.
+
+If the user explicitly provides a DoD (“this is the DoD”), treat it as authoritative:
+- Use it verbatim as the DoD source (ideally by copying it verbatim to `.ai/definition_of_done.md` early).
+- Do not auto-rewrite it; if it has gaps, record them separately (for example `.ai/dod_gaps.md`) so the pipeline can still proceed deterministically.
 
 A good DoD is:
 - Outcome-focused: states what must be true, not what must be done, or how to implement it.
@@ -319,7 +394,7 @@ digraph project_pipeline {
   check_build -> review_consensus [condition="outcome=success"]
   check_build -> postmortem [condition="outcome=fail"]
   review_consensus -> exit [condition="outcome=success"]
-  review_consensus -> postmortem [condition="outcome=retry || outcome=fail"]
+  review_consensus -> postmortem
   postmortem -> implement [loop_restart=true]
 }
 ```
@@ -366,7 +441,7 @@ Custom outcomes are allowed if prompts define them explicitly and edges route wi
 3. **All failures -> exit.** Failure edges must loop back to the implementation node for retry, not to exit.
 4. **Multiple exit nodes.** Exactly one `shape=Msquare` node. Route failures through conditionals, not separate exits.
 5. **Prompts without outcome instructions.** Every prompt must tell the agent what to write in status.json.
-6. **Inlining the spec.** Reference the spec file by path. Don't copy it into prompt attributes. Exception: `expand_spec` node bootstraps the spec.
+6. **Inlining the spec.** Reference the spec file by path. Don't copy it into prompt attributes. Exception: bootstrap nodes (for example `expand_spec`) may inline or copy user-provided content verbatim solely to seed the canonical `.ai/spec.md` (and related `.ai/*` seed artifacts) when no file exists yet.
 7. **Missing graph attributes.** Always set `goal`, `model_stylesheet`, `default_max_retry`.
 8. **Wrong shapes.** Start must be `Mdiamond`. Exit must be `Msquare`.
 9. **Unnecessary timeouts.** Do NOT add timeouts to simple impl/verify nodes in linear pipelines; do add timeouts to looping/external-service nodes.
