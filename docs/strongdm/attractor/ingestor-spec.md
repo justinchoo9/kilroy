@@ -182,7 +182,7 @@ Flags:
 
 ### 5.1 Skill Auto-Detection
 
-When `--skill` is not specified, the ingestor looks for `skills/english-to-dotfile/SKILL.md` relative to the repository root. If found, it is used automatically. If not found, no skill is appended and the LLM operates without the dotfile generation instructions.
+When `--skill` is not specified, the ingestor first looks for `skills/english-to-dotfile/SKILL.md` relative to the repository root. If not found, it falls back to binary-relative install paths (for example `<kilroy-prefix>/share/kilroy/skills/english-to-dotfile/SKILL.md`) and module-cache paths derived from build metadata for `go install` binaries. If no default skill file is found, ingest fails fast.
 
 ### 5.2 Examples
 
