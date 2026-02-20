@@ -87,7 +87,7 @@ func TestReferenceTemplate_ImplementFailureRoutedBeforeVerify(t *testing.T) {
 	}
 }
 
-func TestReferenceTemplate_ToolchainGateIsOutcomeControlledAndRestarted(t *testing.T) {
+func TestReferenceTemplate_ToolchainGateIsOutcomeControlledWithoutPostmortemRestart(t *testing.T) {
 	g, err := dot.Parse(loadReferenceTemplate(t))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -98,6 +98,7 @@ func TestReferenceTemplate_ToolchainGateIsOutcomeControlledAndRestarted(t *testi
 	hasToolchainDeterministicFailToPostmortem := false
 	hasToolchainTransientRestart := false
 	hasToolchainBypassToExpand := false
+	hasPostmortemToToolchain := false
 	hasPostmortemRestartToToolchain := false
 
 	for _, e := range g.Edges {
@@ -113,7 +114,9 @@ func TestReferenceTemplate_ToolchainGateIsOutcomeControlledAndRestarted(t *testi
 			hasToolchainTransientRestart = true
 		case e.From == "check_toolchain" && e.To == "expand_spec" && cond == "":
 			hasToolchainBypassToExpand = true
-		case e.From == "postmortem" && e.To == "check_toolchain" && cond == "" && e.Attr("loop_restart", "false") == "true":
+		case e.From == "postmortem" && e.To == "check_toolchain" && cond == "":
+			hasPostmortemToToolchain = true
+		case e.From == "postmortem" && e.To == "check_toolchain" && e.Attr("loop_restart", "false") == "true":
 			hasPostmortemRestartToToolchain = true
 		}
 	}
@@ -123,14 +126,16 @@ func TestReferenceTemplate_ToolchainGateIsOutcomeControlledAndRestarted(t *testi
 		!hasToolchainDeterministicFailToPostmortem ||
 		!hasToolchainTransientRestart ||
 		hasToolchainBypassToExpand ||
-		!hasPostmortemRestartToToolchain {
+		!hasPostmortemToToolchain ||
+		hasPostmortemRestartToToolchain {
 		t.Fatalf(
-			"missing/broken toolchain gate routing: start_to_toolchain=%v success_to_expand=%v deterministic_fail_to_postmortem=%v transient_restart=%v bypass_to_expand=%v postmortem_restart_to_toolchain=%v",
+			"missing/broken toolchain gate routing: start_to_toolchain=%v success_to_expand=%v deterministic_fail_to_postmortem=%v transient_restart=%v bypass_to_expand=%v postmortem_to_toolchain=%v postmortem_restart_to_toolchain=%v",
 			hasStartToToolchain,
 			hasToolchainSuccessToExpand,
 			hasToolchainDeterministicFailToPostmortem,
 			hasToolchainTransientRestart,
 			hasToolchainBypassToExpand,
+			hasPostmortemToToolchain,
 			hasPostmortemRestartToToolchain,
 		)
 	}

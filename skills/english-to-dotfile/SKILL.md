@@ -72,6 +72,8 @@ Do not use this skill when:
 - Every `shape=box` prompt must define success and failure/retry outcome behavior.
 - If a node reads `.ai/<name>.md`, an upstream node must write that exact same path (no filename drift).
 
+11. Use `tool_command` for `shape=parallelogram` nodes.
+
 ## Workflow
 
 ### Phase 0: Determine Execution Mode and Constraints
@@ -426,7 +428,7 @@ digraph project_pipeline {
   review_consensus -> exit [condition="outcome=success"]
   review_consensus -> postmortem [condition="outcome=retry"]
   review_consensus -> postmortem
-  postmortem -> implement [loop_restart=true]
+  postmortem -> implement
 }
 ```
 
