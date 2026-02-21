@@ -109,6 +109,29 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs(t *testing.T) {
 	}
 }
 
+func TestArgStr(t *testing.T) {
+	tests := []struct {
+		name string
+		args map[string]any
+		key  string
+		want string
+	}{
+		{"present string", map[string]any{"path": "/tmp/foo"}, "path", "/tmp/foo"},
+		{"missing key", map[string]any{"other": "x"}, "path", ""},
+		{"nil value", map[string]any{"path": nil}, "path", ""},
+		{"number value", map[string]any{"n": 42.0}, "n", "42"},
+		{"empty string", map[string]any{"path": ""}, "path", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := argStr(tt.args, tt.key)
+			if got != tt.want {
+				t.Errorf("argStr(%v, %q) = %q, want %q", tt.args, tt.key, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSession_CoreTools_ReadManyFiles_And_ListDir(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)
