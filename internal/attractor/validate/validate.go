@@ -769,7 +769,7 @@ func lintLoopRestartFailureClassGuard(g *model.Graph) []Diagnostic {
 				continue
 			}
 			condExpr := strings.TrimSpace(e.Condition())
-			if conditionMentionsFailureOutcome(condExpr) && !conditionHasTransientInfraGuard(condExpr) {
+			if conditionRoutesFailOutcome(condExpr) && !conditionHasTransientInfraGuard(condExpr) {
 				hasDeterministicFallback = true
 				break
 			}
@@ -852,6 +852,42 @@ func conditionMentionsFailureOutcome(condExpr string) bool {
 		}
 		if val == "fail" || val == "retry" || val == "partial_success" {
 			return true
+		}
+	}
+	return false
+}
+
+// conditionRoutesFailOutcome returns true if the condition will route
+// outcome=fail traffic — specifically outcome=fail or outcome!=success.
+// Unlike conditionMentionsFailureOutcome, this excludes outcome=retry and
+// outcome=partial_success which do not catch deterministic fail outcomes.
+func conditionRoutesFailOutcome(condExpr string) bool {
+	for _, clause := range strings.Split(condExpr, "&&") {
+		clause = strings.TrimSpace(clause)
+		if clause == "" {
+			continue
+		}
+		if strings.Contains(clause, "!=") {
+			parts := strings.SplitN(clause, "!=", 2)
+			if len(parts) == 2 {
+				key := strings.TrimSpace(parts[0])
+				val := strings.Trim(strings.ToLower(strings.TrimSpace(parts[1])), "\"'")
+				if key == "outcome" && val == "success" {
+					return true
+				}
+			}
+			continue
+		}
+		if !strings.Contains(clause, "=") {
+			continue
+		}
+		parts := strings.SplitN(clause, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			val := strings.Trim(strings.ToLower(strings.TrimSpace(parts[1])), "\"'")
+			if key == "outcome" && val == "fail" {
+				return true
+			}
 		}
 	}
 	return false

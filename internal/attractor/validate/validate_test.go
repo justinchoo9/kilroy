@@ -293,6 +293,29 @@ digraph G {
 	assertHasRule(t, diags, "loop_restart_failure_class_guard", SeverityWarning)
 }
 
+func TestValidate_LoopRestartPartialSuccessCompanionIsNotDeterministicFallback_Warns(t *testing.T) {
+	// A non-restart companion conditioned on outcome=partial_success does not
+	// route outcome=fail traffic, so it is not a valid deterministic fallback.
+	g, err := dot.Parse([]byte(`
+digraph G {
+  start [shape=Mdiamond]
+  exit [shape=Msquare]
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="x"]
+  check [shape=diamond]
+  pm [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="postmortem"]
+  start -> a -> check
+  check -> a [condition="outcome=fail && context.failure_class=transient_infra", loop_restart=true]
+  check -> pm [condition="outcome=partial_success"]
+  check -> exit [condition="outcome=success"]
+}
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	diags := Validate(g)
+	assertHasRule(t, diags, "loop_restart_failure_class_guard", SeverityWarning)
+}
+
 func TestValidate_FailLoopFailureClassGuard_WarnsWhenBackEdgeUnguarded(t *testing.T) {
 	g, err := dot.Parse([]byte(`
 digraph G {
