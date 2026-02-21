@@ -314,19 +314,23 @@ func (r *CodergenRouter) runAPI(ctx context.Context, execCtx *Execution, node *m
 				}
 				ticker := time.NewTicker(interval)
 				defer ticker.Stop()
+				var lastCount int
 				for {
 					select {
 					case <-ticker.C:
 						eventsMu.Lock()
 						count := len(events)
 						eventsMu.Unlock()
-						if execCtx != nil && execCtx.Engine != nil {
-							execCtx.Engine.appendProgress(map[string]any{
-								"event":       "stage_heartbeat",
-								"node_id":     node.ID,
-								"elapsed_s":   int(time.Since(apiStart).Seconds()),
-								"event_count": count,
-							})
+						if count > lastCount {
+							lastCount = count
+							if execCtx != nil && execCtx.Engine != nil {
+								execCtx.Engine.appendProgress(map[string]any{
+									"event":       "stage_heartbeat",
+									"node_id":     node.ID,
+									"elapsed_s":   int(time.Since(apiStart).Seconds()),
+									"event_count": count,
+								})
+							}
 						}
 					case <-heartbeatStop:
 						return
@@ -1141,19 +1145,24 @@ func (r *CodergenRouter) runCLI(ctx context.Context, execCtx *Execution, node *m
 			}
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
+			var lastStdoutSz, lastStderrSz int64
 			for {
 				select {
 				case <-ticker.C:
 					stdoutSz, _ := fileSize(stdoutPath)
 					stderrSz, _ := fileSize(stderrPath)
-					if execCtx != nil && execCtx.Engine != nil {
-						execCtx.Engine.appendProgress(map[string]any{
-							"event":        "stage_heartbeat",
-							"node_id":      node.ID,
-							"elapsed_s":    int(time.Since(start).Seconds()),
-							"stdout_bytes": stdoutSz,
-							"stderr_bytes": stderrSz,
-						})
+					if stdoutSz > lastStdoutSz || stderrSz > lastStderrSz {
+						lastStdoutSz = stdoutSz
+						lastStderrSz = stderrSz
+						if execCtx != nil && execCtx.Engine != nil {
+							execCtx.Engine.appendProgress(map[string]any{
+								"event":        "stage_heartbeat",
+								"node_id":      node.ID,
+								"elapsed_s":    int(time.Since(start).Seconds()),
+								"stdout_bytes": stdoutSz,
+								"stderr_bytes": stderrSz,
+							})
+						}
 					}
 				case <-heartbeatStop:
 					return

@@ -209,6 +209,73 @@ digraph G {
 	t.Logf("found %d API heartbeat events", heartbeats)
 }
 
+// TestRunWithConfig_APIBackend_StallWatchdogFiresDespiteHeartbeatGoroutine verifies
+// that the stall watchdog still fires when the API agent_loop session is truly
+// stalled (no new session events) even though the heartbeat goroutine is running.
+// The conditional heartbeat should NOT emit progress when event_count is static.
+func TestRunWithConfig_APIBackend_StallWatchdogFiresDespiteHeartbeatGoroutine(t *testing.T) {
+	repo := initTestRepo(t)
+	logsRoot := t.TempDir()
+
+	pinned := writePinnedCatalog(t)
+	cxdbSrv := newCXDBTestServer(t)
+
+	// Mock OpenAI server that hangs on the first request, simulating a stalled
+	// API call where no session events are produced.
+	stallRelease := make(chan struct{})
+	openaiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		<-stallRelease
+	}))
+	t.Cleanup(openaiSrv.Close)
+	t.Cleanup(func() { close(stallRelease) })
+
+	t.Setenv("OPENAI_API_KEY", "k")
+	t.Setenv("OPENAI_BASE_URL", openaiSrv.URL)
+	t.Setenv("KILROY_CODERGEN_HEARTBEAT_INTERVAL", "100ms")
+
+	stallTimeout := 800
+	stallCheck := 50
+	disableProbe := false
+	cfg := &RunConfigFile{Version: 1}
+	cfg.Repo.Path = repo
+	cfg.CXDB.BinaryAddr = cxdbSrv.BinaryAddr()
+	cfg.CXDB.HTTPBaseURL = cxdbSrv.URL()
+	cfg.LLM.Providers = map[string]ProviderConfig{
+		"openai": {Backend: BackendAPI, Failover: []string{}},
+	}
+	cfg.ModelDB.OpenRouterModelInfoPath = pinned
+	cfg.ModelDB.OpenRouterModelInfoUpdatePolicy = "pinned"
+	cfg.Git.RunBranchPrefix = "attractor/run"
+	cfg.RuntimePolicy.StallTimeoutMS = &stallTimeout
+	cfg.RuntimePolicy.StallCheckIntervalMS = &stallCheck
+	cfg.Preflight.PromptProbes.Enabled = &disableProbe
+
+	dot := []byte(`
+digraph G {
+  graph [goal="test stall detection with api heartbeat"]
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, auto_status=true, prompt="do something"]
+  start -> a -> exit
+}
+`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := RunWithConfig(ctx, dot, cfg, RunOptions{RunID: "api-stall-test", LogsRoot: logsRoot})
+	if err == nil {
+		t.Fatal("expected stall watchdog timeout error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "stall watchdog") {
+		t.Fatalf("expected stall watchdog error, got: %v", err)
+	}
+	t.Logf("stall watchdog fired as expected: %v", err)
+}
+
 func TestRunWithConfig_HeartbeatStopsAfterProcessExit(t *testing.T) {
 	events := runHeartbeatFixture(t)
 	endIdx := findEventIndex(events, "stage_attempt_end", "a")
