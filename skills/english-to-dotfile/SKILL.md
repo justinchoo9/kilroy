@@ -532,6 +532,8 @@ Custom outcomes are allowed if prompts define them explicitly and edges route wi
 46. **Status contract drift across prompts.** Do not omit `$KILROY_STAGE_STATUS_FALLBACK_PATH` or failure/retry payload guidance on any codergen node.
 47. **Handoff filename drift.** Do not write `.ai/foo_log.md` and later read `.ai/implementation_log.md`; producers and consumers must reference the exact same path.
 48. **Unclassified failure back-edges from diamonds.** Do not use `condition="outcome=fail"` alone on back-edges from `shape=diamond`; add `context.failure_class` guards and explicit deterministic fallback.
+49. **Generic failure_reason on semantic verify gates.** Do not let `verify_fidelity` (or similar semantic review nodes) emit a fixed `failure_reason` like `"semantic_fidelity_gap"` without a content-addressable `failure_signature` in meta. The cycle breaker uses `failure_signature` (if present) instead of `failure_reason` to build the dedup key. If the signature doesn't change when different criteria fail, the cycle breaker kills runs that are making real progress. Always instruct semantic verify nodes to set `failure_signature` to a sorted comma-separated list of the specific failed criteria identifiers (e.g. `"AC-3,AC-7,AC-13"`).
+50. **Implement prompt ignores postmortem on repair iterations.** The implement node prompt must strongly condition on `.ai/postmortem_latest.md` existence. When present, it is a REPAIR iteration: read postmortem first, fix only identified gaps, do not regenerate working systems. When absent, execute `.ai/plan_final.md` as a fresh implementation. Do not use weak "if present" / "prioritize" language that lets the LLM treat repair iterations as fresh implementations.
 
 ## Final Pre-Emit Checklist
 
