@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/danshapiro/kilroy/internal/attractor/ingest"
 )
+
+var osExecutable = os.Executable
+var readBuildInfo = debug.ReadBuildInfo
 
 type ingestOptions struct {
 	requirements string
@@ -89,10 +94,7 @@ func parseIngestArgs(args []string) (*ingestOptions, error) {
 	}
 
 	if opts.skillPath == "" {
-		candidate := filepath.Join(opts.repoPath, "skills", "english-to-dotfile", "SKILL.md")
-		if _, err := os.Stat(candidate); err == nil {
-			opts.skillPath = candidate
-		}
+		opts.skillPath = resolveDefaultIngestSkillPath(opts.repoPath)
 	}
 
 	return opts, nil
@@ -106,7 +108,7 @@ func attractorIngest(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: kilroy attractor ingest [flags] <requirements>")
 		fmt.Fprintln(os.Stderr, "  --output, -o    Output .dot file path (default: stdout)")
 		fmt.Fprintln(os.Stderr, "  --model         LLM model (default: claude-sonnet-4-5)")
-		fmt.Fprintln(os.Stderr, "  --skill         Path to skill .md file (default: auto-detect)")
+		fmt.Fprintln(os.Stderr, "  --skill         Path to skill .md file (default: repo/binary auto-detect)")
 		fmt.Fprintln(os.Stderr, "  --repo          Repository root (default: cwd)")
 		fmt.Fprintln(os.Stderr, "  --max-turns     Max agentic turns for Claude (default: 15)")
 		fmt.Fprintln(os.Stderr, "  --no-validate   Skip .dot validation")
@@ -130,7 +132,143 @@ func attractorIngest(args []string) {
 	}
 }
 
+func resolveDefaultIngestSkillPath(repoPath string) string {
+	for _, candidate := range defaultIngestSkillCandidates(repoPath) {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func defaultIngestSkillCandidates(repoPath string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, 6)
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return
+		}
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return
+		}
+		abs = filepath.Clean(abs)
+		if seen[abs] {
+			return
+		}
+		seen[abs] = true
+		out = append(out, abs)
+	}
+	skillPathUnder := func(base string) string {
+		return filepath.Join(base, "skills", "english-to-dotfile", "SKILL.md")
+	}
+
+	if strings.TrimSpace(repoPath) != "" {
+		add(skillPathUnder(repoPath))
+	}
+
+	if exePath, err := osExecutable(); err == nil {
+		exePath = filepath.Clean(strings.TrimSpace(exePath))
+		if exePath != "" {
+			if resolved, err := filepath.EvalSymlinks(exePath); err == nil && strings.TrimSpace(resolved) != "" {
+				exePath = resolved
+			}
+			exeDir := filepath.Dir(exePath)
+			add(skillPathUnder(exeDir))
+			add(skillPathUnder(filepath.Dir(exeDir)))
+			add(skillPathUnder(filepath.Join(filepath.Dir(exeDir), "share", "kilroy")))
+		}
+	}
+
+	for _, moduleDir := range moduleCacheCandidateRootsForInstalledBinary() {
+		add(skillPathUnder(moduleDir))
+	}
+
+	return out
+}
+
+func moduleCacheCandidateRootsForInstalledBinary() []string {
+	info, ok := readBuildInfo()
+	if !ok || info == nil {
+		return nil
+	}
+	modulePath := strings.TrimSpace(info.Main.Path)
+	moduleVersion := strings.TrimSpace(info.Main.Version)
+	if modulePath == "" {
+		return nil
+	}
+	cacheRoot := strings.TrimSpace(os.Getenv("GOMODCACHE"))
+	if cacheRoot == "" {
+		cacheRoot = defaultGoModCacheRoot()
+	}
+	if cacheRoot == "" {
+		return nil
+	}
+
+	seen := map[string]bool{}
+	out := make([]string, 0, 4)
+	add := func(root string) {
+		root = filepath.Clean(strings.TrimSpace(root))
+		if root == "" || seen[root] {
+			return
+		}
+		seen[root] = true
+		out = append(out, root)
+	}
+
+	moduleRootPrefix := filepath.FromSlash(modulePath)
+	if moduleVersion != "" && moduleVersion != "(devel)" {
+		add(filepath.Join(cacheRoot, moduleRootPrefix+"@"+moduleVersion))
+	}
+
+	globPattern := filepath.Join(cacheRoot, moduleRootPrefix+"@*")
+	matches, _ := filepath.Glob(globPattern)
+	if len(matches) > 1 {
+		sort.Slice(matches, func(i, j int) bool {
+			iInfo, iErr := os.Stat(matches[i])
+			jInfo, jErr := os.Stat(matches[j])
+			if iErr == nil && jErr == nil {
+				if !iInfo.ModTime().Equal(jInfo.ModTime()) {
+					return iInfo.ModTime().After(jInfo.ModTime())
+				}
+			}
+			return matches[i] > matches[j]
+		})
+	}
+	for _, m := range matches {
+		add(m)
+	}
+
+	return out
+}
+
+func defaultGoModCacheRoot() string {
+	gopath := strings.TrimSpace(os.Getenv("GOPATH"))
+	if gopath != "" {
+		if idx := strings.IndexRune(gopath, os.PathListSeparator); idx > 0 {
+			gopath = gopath[:idx]
+		}
+	}
+	if gopath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil || strings.TrimSpace(home) == "" {
+			return ""
+		}
+		gopath = filepath.Join(home, "go")
+	}
+	return filepath.Join(gopath, "pkg", "mod")
+}
+
 func runIngest(opts *ingestOptions) (string, error) {
+	if strings.TrimSpace(opts.skillPath) == "" {
+		candidates := defaultIngestSkillCandidates(opts.repoPath)
+		if len(candidates) == 0 {
+			return "", fmt.Errorf("no default skill file found; pass --skill <path>")
+		}
+		return "", fmt.Errorf("no default skill file found; checked: %s; pass --skill <path>", strings.Join(candidates, ", "))
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 

@@ -102,7 +102,7 @@ go build -o kilroy ./cmd/kilroy
 
 Notes:
 
-- Ingest auto-detects `skills/english-to-dotfile/SKILL.md` under `--repo` (default: cwd).
+- Ingest auto-detects `skills/english-to-dotfile/SKILL.md` from `--repo` (default: cwd), then falls back to paths relative to the `kilroy` binary (including Homebrew-style `../share/kilroy/skills/...`) and Go module-cache install roots from build metadata (`go install`).
 - Use `--skill <path>` if your skill file is elsewhere.
 
 ### 3) Validate the pipeline

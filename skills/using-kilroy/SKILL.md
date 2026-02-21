@@ -80,7 +80,7 @@ tail -f <logs_root>/progress.ndjson
 - Uses Claude CLI (`KILROY_CLAUDE_PATH` override, default executable `claude`).
 - Default model: `claude-sonnet-4-5`.
 - Default repo: current working directory.
-- Default skill path auto-detection: `<repo>/skills/english-to-dotfile/SKILL.md`.
+- Default skill path auto-detection: `<repo>/skills/english-to-dotfile/SKILL.md`, then binary-relative fallbacks (for example `<kilroy-prefix>/share/kilroy/skills/english-to-dotfile/SKILL.md`) and Go module-cache roots from binary build metadata.
 - If no skill file exists, ingest fails fast.
 - Validation runs by default; use `--no-validate` to skip.
 
