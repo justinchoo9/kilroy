@@ -65,6 +65,8 @@ curl -fsS "$CXDB_URL/v1/contexts/$CONTEXT_ID/turns?view=typed&limit=20"
 
 To build a reliable picture of run state:
 
+Always inspect `graph.dot` first so status is interpreted in graph context.
+
 1. `manifest.json`: run identity, graph name, repo, worktree, `started_at`.
 2. `live.json`: most recent event.
 3. `checkpoint.json`: last completed node and failure context.
@@ -72,6 +74,7 @@ To build a reliable picture of run state:
 5. `progress.ndjson`: full event timeline.
 
 ```bash
+sed -n '1,200p' "$RUN_ROOT/graph.dot"
 sed -n '1,200p' "$RUN_ROOT/manifest.json"
 sed -n '1,200p' "$RUN_ROOT/live.json"
 [ -f "$RUN_ROOT/checkpoint.json" ] && sed -n '1,200p' "$RUN_ROOT/checkpoint.json"
