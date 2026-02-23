@@ -230,11 +230,10 @@ func decodeResolvedArtifactPolicy(raw any) (ResolvedArtifactPolicy, error) {
 	}
 
 	var rp ResolvedArtifactPolicy
-	if err := json.Unmarshal(b, &rp); err == nil {
-		return normalizeResolvedArtifactPolicy(rp), nil
+	if err := json.Unmarshal(b, &rp); err != nil {
+		return ResolvedArtifactPolicy{}, fmt.Errorf("unable to decode resolved artifact policy snapshot: %w", err)
 	}
-
-	return ResolvedArtifactPolicy{}, fmt.Errorf("unable to decode resolved artifact policy snapshot")
+	return normalizeResolvedArtifactPolicy(rp), nil
 }
 
 func hasResolvedArtifactPolicyShape(shape map[string]json.RawMessage) bool {
