@@ -124,9 +124,13 @@ func resumeFromLogsRoot(ctx context.Context, logsRoot string, ov ResumeOverrides
 	}
 	var cfg *RunConfigFile
 	if _, err := os.Stat(cfgPath); err == nil {
-		if loaded, err := LoadRunConfigFile(cfgPath); err == nil {
-			cfg = loaded
+		loaded, loadErr := LoadRunConfigFile(cfgPath)
+		if loadErr != nil {
+			return nil, fmt.Errorf("resume: load run config %s: %w", cfgPath, loadErr)
 		}
+		cfg = loaded
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("resume: stat run config %s: %w", cfgPath, err)
 	}
 
 	// If we have a run config, resume with the real codergen router and CXDB sink.
