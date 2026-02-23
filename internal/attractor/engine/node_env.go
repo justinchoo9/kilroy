@@ -21,9 +21,8 @@ func buildBaseNodeEnv(rp ResolvedArtifactPolicy) []string {
 	base := os.Environ()
 	base = stripEnvKey(base, "CLAUDECODE")
 
-	normalized := normalizeResolvedArtifactPolicy(rp)
-	overrides := make(map[string]string, len(normalized.Env.Vars))
-	for k, v := range normalized.Env.Vars {
+	overrides := make(map[string]string, len(rp.Env.Vars))
+	for k, v := range rp.Env.Vars {
 		key := strings.TrimSpace(k)
 		if key == "" {
 			continue
@@ -105,10 +104,13 @@ func buildStageRuntimePreamble(execCtx *Execution, nodeID string) string {
 // It bridges buildBaseNodeEnv's []string format to agent.BaseEnv's map format.
 func buildAgentLoopOverrides(rp ResolvedArtifactPolicy, contractEnv map[string]string) map[string]string {
 	base := buildBaseNodeEnv(rp)
-	normalized := normalizeResolvedArtifactPolicy(rp)
-	keep := make(map[string]bool, len(normalized.Env.Vars))
-	for k := range normalized.Env.Vars {
-		keep[k] = true
+	keep := make(map[string]bool, len(rp.Env.Vars))
+	for k := range rp.Env.Vars {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		keep[key] = true
 	}
 	out := make(map[string]string, len(contractEnv)+len(keep))
 	for _, kv := range base {

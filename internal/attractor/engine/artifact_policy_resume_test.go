@@ -36,3 +36,16 @@ func TestResume_RestoreArtifactPolicy_FallsBackToResolverWhenSnapshotMissing(t *
 		t.Fatal("expected resolver fallback to populate artifact policy from run config")
 	}
 }
+
+func TestResume_RestoreArtifactPolicy_RejectsGarbageSnapshot(t *testing.T) {
+	cp := runtime.NewCheckpoint()
+	cp.Extra = map[string]any{
+		"artifact_policy_resolved": map[string]any{
+			"foo": "bar",
+		},
+	}
+	cfg := validMinimalRunConfigForTest()
+	if _, err := restoreArtifactPolicyForResume(cp, cfg, ResolveArtifactPolicyInput{LogsRoot: t.TempDir()}); err == nil {
+		t.Fatal("expected invalid artifact policy snapshot to return an error")
+	}
+}

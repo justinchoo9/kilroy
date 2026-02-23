@@ -221,10 +221,37 @@ func decodeResolvedArtifactPolicy(raw any) (ResolvedArtifactPolicy, error) {
 		return normalizeResolvedArtifactPolicy(env.Policy), nil
 	}
 
+	var shape map[string]json.RawMessage
+	if err := json.Unmarshal(b, &shape); err != nil {
+		return ResolvedArtifactPolicy{}, fmt.Errorf("invalid snapshot payload: %w", err)
+	}
+	if !hasResolvedArtifactPolicyShape(shape) {
+		return ResolvedArtifactPolicy{}, fmt.Errorf("snapshot payload has no resolved artifact policy fields")
+	}
+
 	var rp ResolvedArtifactPolicy
 	if err := json.Unmarshal(b, &rp); err == nil {
 		return normalizeResolvedArtifactPolicy(rp), nil
 	}
 
 	return ResolvedArtifactPolicy{}, fmt.Errorf("unable to decode resolved artifact policy snapshot")
+}
+
+func hasResolvedArtifactPolicyShape(shape map[string]json.RawMessage) bool {
+	if len(shape) == 0 {
+		return false
+	}
+	if _, ok := shape["profiles"]; ok {
+		return true
+	}
+	if _, ok := shape["managed_roots"]; ok {
+		return true
+	}
+	if _, ok := shape["env"]; ok {
+		return true
+	}
+	if _, ok := shape["checkpoint"]; ok {
+		return true
+	}
+	return false
 }
