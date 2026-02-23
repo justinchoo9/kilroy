@@ -4,7 +4,7 @@
 
 **Goal:** Implement one run-resolved artifact policy that drives env shaping, checkpoint staging, and artifact verification while remaining fully consistent with `docs/strongdm/attractor/attractor-spec.md` as written.
 
-**Architecture:** Keep Attractor core contracts intact: handlers execute nodes, engine routes on `Outcome`, checkpoint/resume stays deterministic. Add a Kilroy run-config extension (`artifact_policy`) with modular sub-policies (`env`, `checkpoint`, `verify`), resolve it once at run start, serialize the resolved snapshot for resume determinism, and consume it through existing engine/handler seams. Replace ad hoc regex `verify_artifacts` tool commands with a built-in `verify.artifacts` handler that returns standard `Outcome` fields (`status`, `failure_reason`, `details`, `meta`, `context_updates`).
+**Architecture:** Keep Attractor core contracts intact: handlers execute nodes, engine routes on `Outcome`, checkpoint/resume stays deterministic. Add a Kilroy run-config extension (`artifact_policy`) with modular sub-policies (`env`, `checkpoint`, `verify`), resolve it once at run start, serialize the resolved snapshot for resume determinism, and consume it through existing engine/handler seams. Replace ad hoc regex `verify_artifacts` tool commands with a built-in `verify.artifacts` handler that returns existing Go runtime `Outcome` fields (`status`, `failure_reason`, `details`, `meta`, `context_updates`).
 
 **Tech Stack:** Go (`internal/attractor/engine`, `internal/attractor/runtime`), YAML run config (`RunConfigFile`), DOT templates, `doublestar` glob matching, Git porcelain/pathspec, Go test (`go test ./...`).
 
@@ -58,6 +58,8 @@ This is one subsystem-level refactor (artifact policy contract + engine integrat
 - Modify: `internal/attractor/engine/node_env_test.go`
 - Modify: `internal/attractor/engine/api_env_parity_test.go`
 - Modify: `internal/attractor/engine/handlers.go`
+- Modify: `internal/attractor/engine/codergen_router.go`
+- Modify: `internal/attractor/engine/tool_hooks.go`
 - Modify: `internal/attractor/engine/checkpoint_exclude_test.go`
 - Modify: `skills/english-to-dotfile/reference_template.dot`
 - Modify: `demo/rogue/rogue.dot`
@@ -111,6 +113,16 @@ func TestValidateConfig_ArtifactPolicy_InvalidMode(t *testing.T) {
         t.Fatal("expected validation failure for artifact_policy.profiles.mode")
     }
 }
+
+func TestApplyConfigDefaults_ArtifactPolicy_MigratesLegacyCheckpointExcludes(t *testing.T) {
+    cfg := &RunConfigFile{}
+    cfg.Git.CheckpointExcludeGlobs = []string{"**/legacy-cache/**"}
+    applyConfigDefaults(cfg)
+
+    if !slices.Contains(cfg.ArtifactPolicy.Checkpoint.ExcludeGlobs, "**/legacy-cache/**") {
+        t.Fatalf("legacy git.checkpoint_exclude_globs not migrated: %v", cfg.ArtifactPolicy.Checkpoint.ExcludeGlobs)
+    }
+}
 ```
 
 - [ ] **Step 2: Run tests to verify failure**
@@ -157,6 +169,13 @@ func applyArtifactPolicyDefaults(cfg *RunConfigFile) {
     if strings.TrimSpace(cfg.ArtifactPolicy.Profiles.Mode) == "" {
         cfg.ArtifactPolicy.Profiles.Mode = "auto"
     }
+
+    // Legacy bridge for existing run files: if artifact_policy checkpoint rules
+    // are unset but git.checkpoint_exclude_globs has values, promote them.
+    if len(trimNonEmpty(cfg.ArtifactPolicy.Checkpoint.ExcludeGlobs)) == 0 && len(trimNonEmpty(cfg.Git.CheckpointExcludeGlobs)) > 0 {
+        cfg.ArtifactPolicy.Checkpoint.ExcludeGlobs = append([]string{}, trimNonEmpty(cfg.Git.CheckpointExcludeGlobs)...)
+    }
+
     cfg.ArtifactPolicy.Checkpoint.ExcludeGlobs = trimNonEmpty(cfg.ArtifactPolicy.Checkpoint.ExcludeGlobs)
     if len(cfg.ArtifactPolicy.Checkpoint.ExcludeGlobs) == 0 {
         cfg.ArtifactPolicy.Checkpoint.ExcludeGlobs = []string{
@@ -238,7 +257,10 @@ Expected: FAIL because resolver/detector does not exist.
 // 1) explicit OS env value
 // 2) profile override in artifact_policy.env.overrides
 // 3) managed root default derived under {logs_root}/artifacts/managed-roots
-// 4) existing toolchain fallback behavior (for parity)
+// 4) built-in per-profile defaults (cargo/go/python/node/java cache roots)
+//
+// Note: `github.com/bmatcuk/doublestar/v4` is already in this repo's module graph,
+// so no new dependency bootstrap step is required for glob evaluation.
 
 func ResolveArtifactPolicy(cfg *RunConfigFile, in ResolveArtifactPolicyInput) (ResolvedArtifactPolicy, error) {
     profiles, err := resolveProfiles(cfg.ArtifactPolicy.Profiles, cfg.Repo.Path)
@@ -315,7 +337,11 @@ cp.Extra["artifact_policy_resolved_sha256"] = e.ArtifactPolicy.Hash()
 ```go
 // resume.go
 if raw := cp.Extra["artifact_policy_resolved"]; raw != nil {
-    eng.ArtifactPolicy = mustDecodeResolvedArtifactPolicy(raw)
+    restored := mustDecodeResolvedArtifactPolicy(raw)
+    if want := strings.TrimSpace(fmt.Sprint(cp.Extra["artifact_policy_resolved_sha256"])); want != "" && restored.Hash() != want {
+        return nil, fmt.Errorf("resume: artifact policy snapshot hash mismatch")
+    }
+    eng.ArtifactPolicy = restored
 } else {
     // fallback for old checkpoints only
     rp, err := ResolveArtifactPolicy(cfg, ResolveArtifactPolicyInput{LogsRoot: logsRoot, WorktreeDir: eng.WorktreeDir})
@@ -347,6 +373,9 @@ git commit -m "engine/resume: persist and restore resolved artifact policy for d
 - Modify: `internal/attractor/engine/node_env.go`
 - Test: `internal/attractor/engine/node_env_test.go`
 - Test: `internal/attractor/engine/api_env_parity_test.go`
+- Modify: `internal/attractor/engine/handlers.go`
+- Modify: `internal/attractor/engine/codergen_router.go`
+- Modify: `internal/attractor/engine/tool_hooks.go`
 
 - [ ] **Step 1: Write failing parity tests for profile-driven env values**
 
@@ -386,17 +415,36 @@ func buildBaseNodeEnv(worktreeDir string, rp ResolvedArtifactPolicy) []string {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify pass**
+- [ ] **Step 4: Thread resolved policy through every caller of `buildBaseNodeEnv`**
+
+```go
+// handlers.go (ToolHandler)
+cmd.Env = buildBaseNodeEnv(execCtx.WorktreeDir, execCtx.Engine.ArtifactPolicy)
+
+// codergen_router.go
+baseEnv := buildBaseNodeEnv(execCtx.WorktreeDir, execCtx.Engine.ArtifactPolicy)
+
+// tool_hooks.go
+env := buildBaseNodeEnv(execCtx.WorktreeDir, execCtx.Engine.ArtifactPolicy)
+
+// node_env.go internal callers
+base := buildBaseNodeEnv(worktreeDir, rp)
+```
+
+- [ ] **Step 5: Run tests to verify pass**
 
 Run: `go test ./internal/attractor/engine -run 'BuildBaseNodeEnv_|APIAgentLoopOverrides' -count=1`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add internal/attractor/engine/node_env.go \
   internal/attractor/engine/node_env_test.go \
-  internal/attractor/engine/api_env_parity_test.go
+  internal/attractor/engine/api_env_parity_test.go \
+  internal/attractor/engine/handlers.go \
+  internal/attractor/engine/codergen_router.go \
+  internal/attractor/engine/tool_hooks.go
 git commit -m "engine/env: drive base node env from resolved artifact policy"
 ```
 
@@ -560,9 +608,11 @@ Expected: FAIL.
 verify_artifacts [
     shape=parallelogram,
     type="verify.artifacts",
-    max_retries=0
+    max_retries=1
 ]
 ```
+
+Use `max_retries=1` specifically to permit one retry when the handler returns `status=retry` for transient `git status`/filesystem infra failures.
 
 - [ ] **Step 4: Update `@english-to-dotfile` instructions and run template YAML**
 
@@ -689,4 +739,3 @@ git commit -m "docs(plan): align artifact policy proposal with Attractor-spec-co
 - Use `@english-to-dotfile` when touching generation behavior, so DOT+YAML intent routing remains ergonomic.
 - Use `@investigating-kilroy-runs` to validate real run artifacts for this failure class after implementation.
 - If any task reveals an Attractor-spec contradiction, stop and escalate before coding; do not silently reinterpret the spec.
-
