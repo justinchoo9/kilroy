@@ -37,7 +37,7 @@ This is a standalone, shippable phase. It intentionally excludes artifact verifi
 - Modify: `internal/attractor/engine/config.go`  
   Responsibility: run-config schema, defaults, validation hooks.
 - Modify: `internal/attractor/engine/config_runtime_policy_test.go`  
-  Responsibility: config defaults/validation tests.
+  Responsibility: config defaults/validation tests (including checkpoint exclude migration assertions).
 - Modify: `internal/attractor/engine/engine.go`  
   Responsibility: runtime field to hold resolved artifact policy.
 - Modify: `internal/attractor/engine/run_with_config.go`  
@@ -106,11 +106,19 @@ func TestValidateConfig_ArtifactPolicyRejectsLegacyGitCheckpointExcludes(t *test
 		t.Fatal("expected legacy git.checkpoint_exclude_globs validation error")
 	}
 }
+
+func TestApplyConfigDefaults_LegacyGitCheckpointExcludesNotAutoPopulated(t *testing.T) {
+	cfg := &RunConfigFile{}
+	applyConfigDefaults(cfg)
+	if len(cfg.Git.CheckpointExcludeGlobs) != 0 {
+		t.Fatal("git.checkpoint_exclude_globs must remain empty after migration to artifact_policy")
+	}
+}
 ```
 
 - [ ] **Step 2: Run tests to verify failure**
 
-Run: `go test ./internal/attractor/engine -run 'ArtifactPolicy.*(Initialized|ProfilesDefault|RejectsUnknownProfile|RejectsLegacyGitCheckpointExcludes)' -count=1`  
+Run: `go test ./internal/attractor/engine -run '(ArtifactPolicy.*(Initialized|ProfilesDefault|RejectsUnknownProfile|RejectsLegacyGitCheckpointExcludes)|LegacyGitCheckpointExcludesNotAutoPopulated)' -count=1`  
 Expected: FAIL with missing fields/defaults/validation.
 
 - [ ] **Step 3: Implement minimal schema/types and validation in `artifact_policy.go` + `config.go`**
@@ -162,15 +170,14 @@ func validateArtifactPolicyConfig(cfg *RunConfigFile) error {
 ```go
 // artifact_policy_test_helpers_test.go
 func validMinimalRunConfigForTest() *RunConfigFile {
-	return &RunConfigFile{
-		Version: "1",
-		Repo: RepoConfig{Path: "."},
-		CXDB: CXDBConfig{
-			Address: "127.0.0.1:6379",
-			HTTP:    "127.0.0.1:63790",
-		},
-		ModelDB: ModelDBConfig{Path: filepath.Join(os.TempDir(), "modeldb-part1-test.yaml")},
-	}
+	cfg := &RunConfigFile{}
+	applyConfigDefaults(cfg)
+	cfg.Version = 1
+	cfg.Repo.Path = "/tmp/repo"
+	cfg.CXDB.BinaryAddr = "127.0.0.1:9009"
+	cfg.CXDB.HTTPBaseURL = "http://127.0.0.1:9010"
+	cfg.ModelDB.OpenRouterModelInfoPath = "/tmp/catalog.json"
+	return cfg
 }
 
 func containsEnv(env []string, item string) bool {
@@ -192,11 +199,17 @@ func findEnvPrefix(env []string, prefix string) string {
 }
 ```
 
+Migration sequencing requirement:
+- In `applyConfigDefaults`, stop auto-populating `cfg.Git.CheckpointExcludeGlobs`.
+- Keep the legacy field empty by default.
+- Populate defaults in `cfg.ArtifactPolicy.Checkpoint.ExcludeGlobs` instead.
+- Update `internal/attractor/engine/config_runtime_policy_test.go` to assert the new default location.
+
 Profile whitelist for Part 1: `generic`, `rust`, `go`, `node`, `python`, `java`.
 
 - [ ] **Step 4: Run tests to verify pass**
 
-Run: `go test ./internal/attractor/engine -run 'ArtifactPolicy.*(Initialized|ProfilesDefault|RejectsUnknownProfile|RejectsLegacyGitCheckpointExcludes)' -count=1`  
+Run: `go test ./internal/attractor/engine -run '(ArtifactPolicy.*(Initialized|ProfilesDefault|RejectsUnknownProfile|RejectsLegacyGitCheckpointExcludes)|LegacyGitCheckpointExcludesNotAutoPopulated)' -count=1`  
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -205,8 +218,7 @@ Expected: PASS.
 git add internal/attractor/engine/config.go \
   internal/attractor/engine/artifact_policy.go \
   internal/attractor/engine/artifact_policy_test_helpers_test.go \
-  internal/attractor/engine/config_runtime_policy_test.go \
-  internal/attractor/engine/config_test.go
+  internal/attractor/engine/config_runtime_policy_test.go
 git commit -m "engine/config: add minimal artifact_policy run-config contract"
 ```
 
@@ -221,7 +233,6 @@ git commit -m "engine/config: add minimal artifact_policy run-config contract"
 - Modify: `internal/attractor/engine/engine.go`
 - Modify: `internal/attractor/engine/run_with_config.go`
 - Modify: `internal/attractor/engine/resume.go`
-- Modify: `internal/attractor/runtime/checkpoint.go`
 
 - [ ] **Step 1: Write failing resolver tests**
 
@@ -269,6 +280,26 @@ Resolver contract for Part 1:
 - Relative `managed_roots.*` values are rooted at `{logs_root}/policy-managed-roots/<value>`.
 - Checkpoint excludes are computed from `artifact_policy.checkpoint.exclude_globs`.
 
+Built-in profile defaults must be explicit in `artifact_policy_resolve.go`:
+
+```go
+var profileDefaultEnv = map[string]map[string]string{
+	"generic": {},
+	"rust": {
+		"CARGO_HOME":       "{managed_roots.tool_cache_root}/cargo-home",
+		"RUSTUP_HOME":      "{managed_roots.tool_cache_root}/rustup-home",
+		"CARGO_TARGET_DIR": "{managed_roots.tool_cache_root}/cargo-target",
+	},
+	"go": {
+		"GOPATH":     "{managed_roots.tool_cache_root}/go-path",
+		"GOMODCACHE": "{managed_roots.tool_cache_root}/go-path/pkg/mod",
+	},
+	"node":   {},
+	"python": {},
+	"java":   {},
+}
+```
+
 Runtime wiring:
 - Add `ArtifactPolicy ResolvedArtifactPolicy` to engine runtime state.
 - Persist resolved snapshot in checkpoint extension (`checkpoint.Extra["artifact_policy_resolved"]`) with explicit struct tags/versioned envelope.
@@ -297,8 +328,7 @@ git add internal/attractor/engine/artifact_policy_resolve.go \
   internal/attractor/engine/artifact_policy_resume_test.go \
   internal/attractor/engine/engine.go \
   internal/attractor/engine/run_with_config.go \
-  internal/attractor/engine/resume.go \
-  internal/attractor/runtime/checkpoint.go
+  internal/attractor/engine/resume.go
 git commit -m "engine/runtime: resolve artifact policy once and restore on resume"
 ```
 
@@ -317,38 +347,65 @@ git commit -m "engine/runtime: resolve artifact policy once and restore on resum
 
 ```go
 func TestBuildBaseNodeEnv_RustVarsComeFromResolvedPolicy(t *testing.T) {
-	exec := newExecutionForEnvTests(t)
-	exec.Engine.ArtifactPolicy.Env.Vars = map[string]string{
+	rp := ResolvedArtifactPolicy{}
+	rp.Env.Vars = map[string]string{
 		"CARGO_TARGET_DIR": "/tmp/policy-target",
 	}
-	env := buildBaseNodeEnv(exec.WorktreeDir, exec.Engine.ArtifactPolicy)
+	env := buildBaseNodeEnv(t.TempDir(), rp)
 	if !containsEnv(env, "CARGO_TARGET_DIR=/tmp/policy-target") {
 		t.Fatal("expected CARGO_TARGET_DIR from resolved artifact policy")
 	}
 }
 
-func TestBuildBaseNodeEnv_NoRustProfileNoRustInjection(t *testing.T) {
-	exec := newExecutionForEnvTests(t)
-	exec.Engine.ArtifactPolicy.Env.Vars = map[string]string{}
-	env := buildBaseNodeEnv(exec.WorktreeDir, exec.Engine.ArtifactPolicy)
+func TestBuildBaseNodeEnv_NoImplicitRustOrGoInjectionWithoutPolicy(t *testing.T) {
+	env := buildBaseNodeEnv(t.TempDir(), ResolvedArtifactPolicy{})
 	if findEnvPrefix(env, "CARGO_TARGET_DIR=") != "" {
 		t.Fatal("unexpected implicit Rust env injection")
 	}
+	if findEnvPrefix(env, "GOPATH=") != "" {
+		t.Fatal("unexpected implicit Go env injection")
+	}
 }
 
-func TestCheckpointExcludes_ComesFromResolvedArtifactPolicy(t *testing.T) {
-	exec := newExecutionForCheckpointTests(t)
-	exec.Engine.ArtifactPolicy.Checkpoint.ExcludeGlobs = []string{"**/.cargo-target*/**"}
-	args := checkpointGitAddArgs(exec.Engine)
-	if !slices.Contains(args, ":(exclude)**/.cargo-target*/**") {
-		t.Fatal("expected checkpoint excludes from resolved artifact policy")
+func TestRunWithConfig_CheckpointExcludesConfiguredArtifactsFromArtifactPolicy(t *testing.T) {
+	repo := initTestRepo(t)
+	logsRoot := t.TempDir()
+	pinned := writePinnedCatalog(t)
+	cxdbSrv := newCXDBTestServer(t)
+
+	cfg := &RunConfigFile{Version: 1}
+	cfg.Repo.Path = repo
+	cfg.CXDB.BinaryAddr = cxdbSrv.BinaryAddr()
+	cfg.CXDB.HTTPBaseURL = cxdbSrv.URL()
+	cfg.ModelDB.OpenRouterModelInfoPath = pinned
+	cfg.ModelDB.OpenRouterModelInfoUpdatePolicy = "pinned"
+	cfg.Git.RunBranchPrefix = "attractor/run"
+	cfg.ArtifactPolicy.Checkpoint.ExcludeGlobs = []string{"**/.cargo_target_local/**"}
+
+	dot := []byte(`digraph G {
+  graph [goal="checkpoint exclude from artifact policy"]
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  write_files [shape=parallelogram, tool_command="mkdir -p src .cargo_target_local/obj && echo ok > src/ok.txt && echo temp > .cargo_target_local/obj/a.bin"]
+  start -> write_files -> exit
+}`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	res, err := RunWithConfig(ctx, dot, cfg, RunOptions{RunID: "checkpoint-exclude-artifact-policy", LogsRoot: logsRoot})
+	if err != nil {
+		t.Fatalf("RunWithConfig: %v", err)
+	}
+	files := gitLsFiles(t, res.WorktreeDir)
+	if containsPath(files, ".cargo_target_local/obj/a.bin") {
+		t.Fatal("excluded artifact should not be checkpointed")
 	}
 }
 ```
 
 - [ ] **Step 2: Run tests to verify failure**
 
-Run: `go test ./internal/attractor/engine -run '(BuildBaseNodeEnv|CheckpointExcludes_).*' -count=1`  
+Run: `go test ./internal/attractor/engine -run '(BuildBaseNodeEnv|CheckpointExcludesConfiguredArtifactsFromArtifactPolicy)' -count=1`  
 Expected: FAIL while Rust hardcoded branches are still present.
 
 - [ ] **Step 3: Implement consumer migration and remove hardcoded Rust code**
@@ -362,7 +419,7 @@ Required edits:
 
 - [ ] **Step 4: Run tests to verify pass**
 
-Run: `go test ./internal/attractor/engine -run '(BuildBaseNodeEnv|CheckpointExcludes_).*' -count=1`  
+Run: `go test ./internal/attractor/engine -run '(BuildBaseNodeEnv|CheckpointExcludesConfiguredArtifactsFromArtifactPolicy)' -count=1`  
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -373,7 +430,7 @@ git add internal/attractor/engine/node_env.go \
   internal/attractor/engine/engine.go \
   internal/attractor/engine/tool_hooks.go \
   internal/attractor/engine/checkpoint_exclude_test.go
-git commit -m "engine: remove hardcoded Rust artifact handling in env and checkpoint paths"
+git commit -m "engine: remove hardcoded Rust/Go artifact handling in env and checkpoint paths"
 ```
 
 ## Chunk 4: Authoring Surface and Phase Exit
@@ -397,7 +454,7 @@ artifact_policy:
   checkpoint:
     exclude_globs:
       - "**/.cargo-target*/**"
-      - "**/node_modules/**"
+      - "**/.cargo_target*/**"
 ```
 
 Run-config migration note for Part 1:
@@ -408,6 +465,9 @@ Run-config migration note for Part 1:
 
 Run: `go test ./internal/attractor/engine -run 'Config' -count=1`  
 Expected: PASS.
+
+Run: `go test ./internal/attractor/engine -run 'LoadRunConfigFile_YAMLAndJSON' -count=1`  
+Expected: PASS (template-compatible YAML parses with new schema).
 
 - [ ] **Step 3: Commit**
 
