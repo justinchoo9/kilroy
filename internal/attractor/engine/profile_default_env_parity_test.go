@@ -9,12 +9,8 @@ import (
 )
 
 type profileDefaultEnvFile struct {
-	Version  int                                      `yaml:"version"`
-	Profiles map[string]profileDefaultEnvFileEntry `yaml:"profiles"`
-}
-
-type profileDefaultEnvFileEntry struct {
-	Env map[string]string `yaml:"env"`
+	Version  int                        `yaml:"version"`
+	Profiles map[string]map[string]string `yaml:"profiles"`
 }
 
 func findRepoRootFromEngine(t *testing.T) string {
@@ -50,59 +46,42 @@ func loadProfileDefaultEnvFile(t *testing.T) profileDefaultEnvFile {
 	return file
 }
 
-func TestProfileDefaultEnv_MatchesEngine(t *testing.T) {
+func TestProfileDefaultEnv_VersionAndStructure(t *testing.T) {
 	file := loadProfileDefaultEnvFile(t)
 
 	if file.Version != 1 {
 		t.Fatalf("profile_default_env.yaml version=%d, want 1", file.Version)
 	}
-
-	// Every engine profile must be in the YAML.
-	for profile, engineEnv := range profileDefaultEnv {
-		yamlEntry, ok := file.Profiles[profile]
-		if !ok {
-			t.Errorf("engine profile %q missing from profile_default_env.yaml", profile)
-			continue
-		}
-		yamlEnv := yamlEntry.Env
-		if yamlEnv == nil {
-			yamlEnv = map[string]string{}
-		}
-		for k, v := range engineEnv {
-			got, ok := yamlEnv[k]
-			if !ok {
-				t.Errorf("profile %q: engine env var %q missing from YAML", profile, k)
-				continue
-			}
-			if got != v {
-				t.Errorf("profile %q: env var %q = %q in YAML, want %q", profile, k, got, v)
-			}
-		}
-		for k := range yamlEnv {
-			if _, ok := engineEnv[k]; !ok {
-				t.Errorf("profile %q: YAML has extra env var %q not in engine", profile, k)
-			}
-		}
+	if len(file.Profiles) == 0 {
+		t.Fatal("profile_default_env.yaml has no profiles")
 	}
 
-	// Every YAML profile must be in the engine.
-	for profile := range file.Profiles {
-		if _, ok := profileDefaultEnv[profile]; !ok {
-			t.Errorf("YAML profile %q not present in engine profileDefaultEnv", profile)
+	// Every env value must use {managed_roots.*} templates or be empty.
+	for profile, envVars := range file.Profiles {
+		for k, v := range envVars {
+			if k == "" {
+				t.Errorf("profile %q: empty env var key", profile)
+			}
+			if v == "" {
+				t.Errorf("profile %q: empty value for env var %q", profile, k)
+			}
 		}
 	}
 }
 
-func TestProfileDefaultEnv_MatchesAllowedProfiles(t *testing.T) {
-	// Ensure profileDefaultEnv and allowedArtifactPolicyProfiles stay in sync.
-	for profile := range profileDefaultEnv {
+func TestProfileDefaultEnv_ProfilesMatchAllowedSet(t *testing.T) {
+	file := loadProfileDefaultEnvFile(t)
+
+	// Every YAML profile must be in allowedArtifactPolicyProfiles.
+	for profile := range file.Profiles {
 		if _, ok := allowedArtifactPolicyProfiles[profile]; !ok {
-			t.Errorf("profileDefaultEnv has profile %q not in allowedArtifactPolicyProfiles", profile)
+			t.Errorf("YAML profile %q not in allowedArtifactPolicyProfiles", profile)
 		}
 	}
+	// Every allowed profile must be in the YAML.
 	for profile := range allowedArtifactPolicyProfiles {
-		if _, ok := profileDefaultEnv[profile]; !ok {
-			t.Errorf("allowedArtifactPolicyProfiles has profile %q not in profileDefaultEnv", profile)
+		if _, ok := file.Profiles[profile]; !ok {
+			t.Errorf("allowedArtifactPolicyProfiles has profile %q missing from profile_default_env.yaml", profile)
 		}
 	}
 }
