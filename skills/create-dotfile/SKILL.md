@@ -68,6 +68,15 @@ Model defaults source:
 - Verify no unresolved placeholders (`DEFAULT_MODEL`, etc.).
 - Run syntax + semantic validation loops, applying minimal fixes until clean.
 
+## Failure and Artifact Contracts (Required)
+
+- `failure_class` must be one of:
+  `transient_infra`, `budget_exhausted`, `compilation_loop`,
+  `deterministic`, `canceled`, `structural`.
+- Do not emit non-canonical `failure_class` values (for example: `semantic`).
+- For deterministic artifact checks, emit a failure payload that includes exact offending paths in details.
+- `verify_artifacts` checks must fail deterministically when artifacts are present and report exact offending paths.
+
 ## Non-Negotiable Guardrails
 
 - Programmatic output is DOT only (`digraph ... }`), no markdown fences or sentinel text.
