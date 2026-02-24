@@ -12,7 +12,7 @@ import (
 func loadReferenceTemplate(t *testing.T) []byte {
 	t.Helper()
 	repoRoot := findRepoRoot(t)
-	p := filepath.Join(repoRoot, "skills", "english-to-dotfile", "reference_template.dot")
+	p := filepath.Join(repoRoot, "skills", "create-dotfile", "reference_template.dot")
 	b, err := os.ReadFile(p)
 	if err != nil {
 		t.Fatalf("read reference template: %v", err)

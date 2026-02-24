@@ -25,7 +25,7 @@ digraph reference_template {
     // The ingestor must compose every prompt from scratch based on the
     // actual project spec, DoD, and repo contents. Prompt requirements
     // are listed in comments above each shape=box node. See Phase 4 of
-    // the english-to-dotfile skill for the full prompt contract.
+    // the create-dotfile skill for the full prompt contract.
     //
     // Common requirements for ALL shape=box prompts (do not repeat per node):
     //   - Reference $goal

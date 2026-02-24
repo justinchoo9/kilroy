@@ -2,7 +2,7 @@ version: 1
 
 # Language-specific environment variable defaults for artifact_policy.env.overrides.
 #
-# Skills (create-runfile, english-to-dotfile) reference this file when populating
+# Skills (create-runfile, create-dotfile) reference this file when populating
 # run config artifact_policy sections.  The engine does NOT read this file; it
 # only applies whatever env overrides appear in the run config YAML.
 #

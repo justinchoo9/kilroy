@@ -136,9 +136,6 @@ func TestBuildCLIArgs_PromptUsesSkillNameFromSkillPath(t *testing.T) {
 	if !strings.Contains(prompt, "Follow the create-dotfile skill") {
 		t.Fatalf("prompt missing skill binding, got: %q", prompt)
 	}
-	if strings.Contains(prompt, "english-to-dotfile") {
-		t.Fatalf("prompt should not hardcode english-to-dotfile, got: %q", prompt)
-	}
 }
 
 func TestBuildCLIArgs_PromptFallsBackToGenericSkillLabelWithoutSkillPath(t *testing.T) {
@@ -154,9 +151,6 @@ func TestBuildCLIArgs_PromptFallsBackToGenericSkillLabelWithoutSkillPath(t *test
 	prompt := args[len(args)-1]
 	if !strings.Contains(prompt, "Follow the provided skill") {
 		t.Fatalf("prompt missing generic fallback skill label, got: %q", prompt)
-	}
-	if strings.Contains(prompt, "english-to-dotfile") {
-		t.Fatalf("prompt should not hardcode english-to-dotfile, got: %q", prompt)
 	}
 }
 
