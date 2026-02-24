@@ -280,6 +280,9 @@ func (r *CodergenRouter) runAPI(ctx context.Context, execCtx *Execution, node *m
 				enc := json.NewEncoder(eventsFile)
 				encodeFailed := false
 				for ev := range sess.Events() {
+					// Session events are concrete stage activity, even if the
+					// heartbeat ticker has not fired yet.
+					recordStageActivity(execCtx, ev.Timestamp)
 					if !encodeFailed {
 						if err := enc.Encode(ev); err != nil {
 							encodeFailed = true
@@ -308,7 +311,7 @@ func (r *CodergenRouter) runAPI(ctx context.Context, execCtx *Execution, node *m
 			apiStart := time.Now()
 			go func() {
 				defer close(heartbeatDone)
-				interval := codergenHeartbeatInterval()
+				interval := codergenHeartbeatIntervalForExecution(execCtx)
 				if interval <= 0 {
 					return
 				}
@@ -1139,7 +1142,7 @@ func (r *CodergenRouter) runCLI(ctx context.Context, execCtx *Execution, node *m
 		heartbeatDone := make(chan struct{})
 		go func() {
 			defer close(heartbeatDone)
-			interval := codergenHeartbeatInterval()
+			interval := codergenHeartbeatIntervalForExecution(execCtx)
 			if interval <= 0 {
 				return
 			}
@@ -1611,14 +1614,54 @@ func scrubConflictingProviderEnvKeys(base []string, providerKey string) []string
 	return out
 }
 
-func codergenHeartbeatInterval() time.Duration {
+const (
+	codergenHeartbeatDefaultInterval = 60 * time.Second
+	codergenHeartbeatMinInterval     = 50 * time.Millisecond
+)
+
+func codergenHeartbeatIntervalForExecution(exec *Execution) time.Duration {
+	stallTimeout := time.Duration(0)
+	if exec != nil && exec.Engine != nil {
+		stallTimeout = exec.Engine.Options.StallTimeout
+	}
+	return codergenHeartbeatIntervalWithStallTimeout(stallTimeout)
+}
+
+func codergenHeartbeatIntervalWithStallTimeout(stallTimeout time.Duration) time.Duration {
+	if override := parseCodergenHeartbeatEnv(); override > 0 {
+		return override
+	}
+	if stallTimeout <= 0 {
+		return codergenHeartbeatDefaultInterval
+	}
+	interval := stallTimeout / 3
+	if interval < codergenHeartbeatMinInterval {
+		interval = codergenHeartbeatMinInterval
+	}
+	if interval > codergenHeartbeatDefaultInterval {
+		interval = codergenHeartbeatDefaultInterval
+	}
+	return interval
+}
+
+func recordStageActivity(exec *Execution, at time.Time) {
+	if exec == nil || exec.Engine == nil {
+		return
+	}
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	exec.Engine.setLastProgressTime(at)
+}
+
+func parseCodergenHeartbeatEnv() time.Duration {
 	v := strings.TrimSpace(os.Getenv("KILROY_CODERGEN_HEARTBEAT_INTERVAL"))
 	if v == "" {
-		return 60 * time.Second
+		return 0
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		return 60 * time.Second
+		return 0
 	}
 	return d
 }
