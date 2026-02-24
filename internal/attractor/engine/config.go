@@ -59,9 +59,11 @@ type PreflightConfig struct {
 }
 
 type RunConfigFile struct {
-	Version int    `json:"version" yaml:"version"`
-	Graph   string `json:"graph,omitempty" yaml:"graph,omitempty"`
-	Task    string `json:"task,omitempty" yaml:"task,omitempty"`
+	Version int `json:"version" yaml:"version"`
+	// Graph and Task are optional operator metadata fields used by wrappers/UI.
+	// The engine does not consume them directly during run execution.
+	Graph string `json:"graph,omitempty" yaml:"graph,omitempty"`
+	Task  string `json:"task,omitempty" yaml:"task,omitempty"`
 
 	Repo struct {
 		Path string `json:"path" yaml:"path"`
@@ -160,12 +162,19 @@ func decodeYAMLStrict(b []byte, cfg *RunConfigFile) error {
 	if err := dec.Decode(cfg); err != nil {
 		return err
 	}
-	var trailing any
-	if err := dec.Decode(&trailing); err != io.EOF {
-		if err == nil {
+	for {
+		var trailing any
+		if err := dec.Decode(&trailing); err != io.EOF {
+			if err != nil {
+				return err
+			}
+			// Allow empty trailing documents (for example a dangling "---").
+			if trailing == nil {
+				continue
+			}
 			return fmt.Errorf("yaml: multiple documents are not allowed")
 		}
-		return err
+		break
 	}
 	return nil
 }
