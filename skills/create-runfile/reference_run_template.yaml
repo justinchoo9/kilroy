@@ -49,6 +49,8 @@ artifact_policy:
     exclude_globs:
       - "**/.cargo-target*/**"
       - "**/.cargo_target*/**"
+      - "**/.wasm-pack/**"
+      - "**/.tmpbuild/**"
 
 runtime_policy:
   stage_timeout_ms: 0

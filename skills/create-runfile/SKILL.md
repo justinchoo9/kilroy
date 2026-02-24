@@ -40,6 +40,8 @@ Default run-config source:
 3. Start from the template and fill required fields.
 - Required: `version`, `repo.path`, `cxdb.binary_addr`, `cxdb.http_base_url`, `modeldb.openrouter_model_info_path`.
 - Keep absolute paths for repo/modeldb/script entries.
+- Emit only fields supported by `internal/attractor/engine/config.go`.
+- Unknown keys are rejected at load time; do not emit unsupported keys.
 
 4. Align providers with DOT.
 - For every provider used by DOT, set `llm.providers.<provider>.backend` (`api` or `cli`).
@@ -53,6 +55,8 @@ Default run-config source:
 6. Preserve local-run robustness.
 - In this repo, keep `cxdb.autostart` launcher wiring when generating local CXDB configs.
 - Keep artifact/checkpoint hygiene settings where relevant (for example managed tool-cache roots).
+- Use `artifact_policy.checkpoint.exclude_globs` for checkpoint artifact hygiene.
+- Do not use deprecated `git.checkpoint_exclude_globs`.
 
 7. Validate alignment before handoff.
 - Confirm every DOT provider has a run-config backend entry.
@@ -65,6 +69,7 @@ Default run-config source:
 - Do not omit providers that are referenced by the graph.
 - Do not use fragile preflight probe timeouts for real-provider runs.
 - Do not emit local CXDB configs without `cxdb.autostart` wiring in this repository context.
+- Do not emit unsupported keys (for example: `runtime_robustness`, `provider_capability_constraints`).
 
 ## References
 
