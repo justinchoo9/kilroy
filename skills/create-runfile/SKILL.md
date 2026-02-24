@@ -47,18 +47,24 @@ Default run-config source:
 - For every provider used by DOT, set `llm.providers.<provider>.backend` (`api` or `cli`).
 - Do not edit DOT to force backend execution strategy.
 
-5. Apply runtime defaults and safety guardrails.
+5. Populate artifact_policy from skills/shared/profile_default_env.yaml.
+- The engine applies only env overrides declared explicitly in the run config.
+- Read `skills/shared/profile_default_env.yaml` for per-profile reference values.
+- Emit all required env vars for each profile used by the DOT graph.
+- Set `artifact_policy.checkpoint.exclude_globs` for checkpoint hygiene.
+
+6. Apply runtime defaults and safety guardrails.
 - Set `git.run_branch_prefix`, `git.commit_per_node`, and `git.require_clean` intentionally.
 - Keep `runtime_policy` explicit (`stage_timeout_ms`, `stall_timeout_ms`, retry cap).
 - Enable `preflight.prompt_probes` and use a non-aggressive timeout baseline for real-provider runs.
 
-6. Preserve local-run robustness.
+7. Preserve local-run robustness.
 - In this repo, keep `cxdb.autostart` launcher wiring when generating local CXDB configs.
 - Keep artifact/checkpoint hygiene settings where relevant (for example managed tool-cache roots).
 - Use `artifact_policy.checkpoint.exclude_globs` for checkpoint artifact hygiene.
 - Do not use deprecated `git.checkpoint_exclude_globs`.
 
-7. Validate alignment before handoff.
+8. Validate alignment before handoff.
 - Confirm every DOT provider has a run-config backend entry.
 - Confirm mode consistency (`real` vs `test_shim`) with intended command flags.
 - Confirm config has no unresolved placeholder paths.
@@ -77,3 +83,4 @@ Default run-config source:
 - `docs/strongdm/attractor/unified-llm-spec.md`
 - `README.md`
 - `skills/create-runfile/reference_run_template.yaml`
+- `skills/shared/profile_default_env.yaml`

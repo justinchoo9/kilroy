@@ -21,10 +21,13 @@ func TestResolveArtifactPolicy_RelativeManagedRootsUseLogsRoot(t *testing.T) {
 	}
 }
 
-func TestResolveArtifactPolicy_OSOverridesProfileDefaults(t *testing.T) {
+func TestResolveArtifactPolicy_OSOverridesConfigOverrides(t *testing.T) {
 	t.Setenv("CARGO_TARGET_DIR", "/tmp/from-os")
 	cfg := validMinimalRunConfigForTest()
 	cfg.ArtifactPolicy.Profiles = []string{"rust"}
+	cfg.ArtifactPolicy.Env.Overrides = map[string]map[string]string{
+		"rust": {"CARGO_TARGET_DIR": "{managed_roots.tool_cache_root}/cargo-target"},
+	}
 
 	rp, err := ResolveArtifactPolicy(cfg, ResolveArtifactPolicyInput{LogsRoot: t.TempDir()})
 	if err != nil {
@@ -32,6 +35,20 @@ func TestResolveArtifactPolicy_OSOverridesProfileDefaults(t *testing.T) {
 	}
 	if got := rp.Env.Vars["CARGO_TARGET_DIR"]; got != "/tmp/from-os" {
 		t.Fatalf("CARGO_TARGET_DIR=%q want /tmp/from-os", got)
+	}
+}
+
+func TestResolveArtifactPolicy_NoImplicitEnvWithoutOverrides(t *testing.T) {
+	cfg := validMinimalRunConfigForTest()
+	cfg.ArtifactPolicy.Profiles = []string{"rust"}
+	// No env.overrides set — engine should NOT inject language-specific defaults.
+
+	rp, err := ResolveArtifactPolicy(cfg, ResolveArtifactPolicyInput{LogsRoot: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rp.Env.Vars) != 0 {
+		t.Fatalf("expected empty env vars without explicit overrides, got %+v", rp.Env.Vars)
 	}
 }
 

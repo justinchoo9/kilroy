@@ -37,6 +37,9 @@ git:
   run_branch_prefix: attractor/run
   commit_per_node: true
 
+# artifact_policy: language-specific env and checkpoint config.
+# The engine applies only what is declared here — no implicit defaults.
+# See skills/shared/profile_default_env.yaml for per-language reference values.
 artifact_policy:
   profiles: ["rust"]
   env:
@@ -44,6 +47,8 @@ artifact_policy:
       tool_cache_root: "managed"
     overrides:
       rust:
+        CARGO_HOME: "{managed_roots.tool_cache_root}/cargo-home"
+        RUSTUP_HOME: "{managed_roots.tool_cache_root}/rustup-home"
         CARGO_TARGET_DIR: "{managed_roots.tool_cache_root}/cargo-target"
   checkpoint:
     exclude_globs:

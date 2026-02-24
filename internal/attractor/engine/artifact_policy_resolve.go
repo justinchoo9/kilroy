@@ -40,24 +40,7 @@ const (
 	artifactPolicyResolvedVersion  = 1
 )
 
-var (
-	managedRootTemplateRE = regexp.MustCompile(`\{managed_roots\.([A-Za-z0-9_-]+)\}`)
-	profileDefaultEnv     = map[string]map[string]string{
-		"generic": {},
-		"rust": {
-			"CARGO_HOME":       "{managed_roots.tool_cache_root}/cargo-home",
-			"RUSTUP_HOME":      "{managed_roots.tool_cache_root}/rustup-home",
-			"CARGO_TARGET_DIR": "{managed_roots.tool_cache_root}/cargo-target",
-		},
-		"go": {
-			"GOPATH":     "{managed_roots.tool_cache_root}/go-path",
-			"GOMODCACHE": "{managed_roots.tool_cache_root}/go-path/pkg/mod",
-		},
-		"node":   {},
-		"python": {},
-		"java":   {},
-	}
-)
+var managedRootTemplateRE = regexp.MustCompile(`\{managed_roots\.([A-Za-z0-9_-]+)\}`)
 
 func ResolveArtifactPolicy(cfg *RunConfigFile, in ResolveArtifactPolicyInput) (ResolvedArtifactPolicy, error) {
 	out := ResolvedArtifactPolicy{
@@ -90,19 +73,9 @@ func ResolveArtifactPolicy(cfg *RunConfigFile, in ResolveArtifactPolicyInput) (R
 	out.ManagedRoots = managedRoots
 
 	envVars := map[string]string{}
-	for _, profile := range profiles {
-		defaults, ok := profileDefaultEnv[profile]
-		if !ok {
-			return ResolvedArtifactPolicy{}, fmt.Errorf("artifact_policy: unsupported profile %q", profile)
-		}
-		for k, v := range defaults {
-			key := strings.TrimSpace(k)
-			if key == "" {
-				continue
-			}
-			envVars[key] = expandManagedRootTemplates(v, managedRoots)
-		}
-	}
+	// Language-specific env defaults live in skills/shared/profile_default_env.yaml,
+	// not in the engine.  The engine only applies overrides declared explicitly in
+	// the run config's artifact_policy.env.overrides section.
 	for _, profile := range profiles {
 		overrides, ok := cfg.ArtifactPolicy.Env.Overrides[profile]
 		if !ok {
