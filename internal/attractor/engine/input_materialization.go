@@ -92,6 +92,14 @@ type inputIncludeMissingError struct {
 	Patterns []string
 }
 
+type inputReferenceQueueReason int
+
+const (
+	inputReferenceQueueReasonDefault inputReferenceQueueReason = iota
+	inputReferenceQueueReasonDiscovered
+	inputReferenceQueueReasonExplicit
+)
+
 func (e *inputIncludeMissingError) Error() string {
 	if e == nil || len(e.Patterns) == 0 {
 		return "input_include_missing"
@@ -125,12 +133,16 @@ func materializeInputClosure(ctx context.Context, opts InputMaterializationOptio
 
 	resolved := map[string]bool{}
 	queued := map[string]bool{}
+	queueReasons := map[string]inputReferenceQueueReason{}
 	queue := make([]string, 0, len(requiredSeeds)+len(defaultSeeds))
-	push := func(paths ...string) {
+	push := func(reason inputReferenceQueueReason, paths ...string) {
 		for _, p := range paths {
 			abs, aerr := filepath.Abs(strings.TrimSpace(p))
 			if aerr != nil {
 				continue
+			}
+			if prev, ok := queueReasons[abs]; !ok || reason > prev {
+				queueReasons[abs] = reason
 			}
 			if queued[abs] {
 				continue
@@ -139,8 +151,8 @@ func materializeInputClosure(ctx context.Context, opts InputMaterializationOptio
 			queue = append(queue, abs)
 		}
 	}
-	push(requiredSeeds...)
-	push(defaultSeeds...)
+	push(inputReferenceQueueReasonExplicit, requiredSeeds...)
+	push(inputReferenceQueueReasonDefault, defaultSeeds...)
 
 	discovered := make([]DiscoveredInputReference, 0, 16)
 	warnings := make([]string, 0, 4)
@@ -159,7 +171,8 @@ func materializeInputClosure(ctx context.Context, opts InputMaterializationOptio
 			continue
 		}
 		resolved[current] = true
-		if !opts.FollowReferences {
+		reason := queueReasons[current]
+		if !opts.FollowReferences || !shouldScanInputReferences(current, reason) {
 			continue
 		}
 
@@ -198,7 +211,7 @@ func materializeInputClosure(ctx context.Context, opts InputMaterializationOptio
 					Confidence: "inferred",
 				})
 			}
-			push(matches...)
+			push(inputReferenceReasonFromParent(reason), matches...)
 		}
 	}
 
@@ -633,6 +646,62 @@ func isAbsolutePathLike(path string) bool {
 		return true
 	}
 	return windowsAbsPathRE.MatchString(path)
+}
+
+func inputReferenceReasonFromParent(parent inputReferenceQueueReason) inputReferenceQueueReason {
+	if parent == inputReferenceQueueReasonExplicit {
+		return inputReferenceQueueReasonExplicit
+	}
+	return inputReferenceQueueReasonDiscovered
+}
+
+func shouldScanInputReferences(path string, reason inputReferenceQueueReason) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	if reason == inputReferenceQueueReasonExplicit {
+		return true
+	}
+	if !isReferenceDocumentPath(path) {
+		return false
+	}
+	if isLikelyArtifactInputPath(path) {
+		return false
+	}
+	return true
+}
+
+func isReferenceDocumentPath(path string) bool {
+	base := strings.ToLower(strings.TrimSpace(filepath.Base(path)))
+	ext := strings.ToLower(strings.TrimSpace(filepath.Ext(base)))
+	switch ext {
+	case ".md", ".markdown", ".mdx", ".txt", ".rst", ".adoc", ".asciidoc", ".dot", ".yaml", ".yml", ".toml":
+		return true
+	}
+	if ext != "" {
+		return false
+	}
+	switch base {
+	case "readme", "license", "copying", "notice", "dod", "spec", "requirements", "tests", "testplan":
+		return true
+	default:
+		return false
+	}
+}
+
+func isLikelyArtifactInputPath(path string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(filepath.Clean(path), "\\", "/"))
+	if normalized == "" {
+		return false
+	}
+	segments := strings.Split(normalized, "/")
+	for _, seg := range segments {
+		switch seg {
+		case ".git", ".jj", "logs", "benchmarks", "worktree", "node_modules", ".pnpm-store", ".venv", "venv", "__pycache__", ".pytest_cache", "dist-info", "managed":
+			return true
+		}
+	}
+	return false
 }
 
 func inputRunManifestPath(logsRoot string) string {

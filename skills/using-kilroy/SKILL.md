@@ -278,6 +278,18 @@ If preflight or launch fails, **diagnose and present options** — never silentl
 
 This guard applies from the moment you begin building or executing a `kilroy attractor run` command until the user explicitly asks for changes. It does NOT apply during graph authoring/editing phases before a run is requested.
 
+## Launch Intent Priority
+
+When the user clearly instructs you to start/launch/run Kilroy, begin the run immediately. Do not ask extra "are you sure?" confirmation questions that delay execution.
+
+Rationale: users often issue launch commands right before stepping away, and waiting for an unnecessary confirmation can waste hours.
+
+Execution rule:
+
+- If the requested run config is a production profile (for example `llm.cli_profile: real`) and the user clearly asked to start the run, start the production run.
+- Prefer detached launch for long-running jobs unless the user explicitly requests foreground execution.
+- Only stop to ask questions when required launch inputs are genuinely missing or contradictory (for example no graph path and no run config path).
+
 ## Preflight Failure Playbook
 
 When preflight checks fail, follow this sequence:

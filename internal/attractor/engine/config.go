@@ -284,7 +284,7 @@ func applyConfigDefaults(cfg *RunConfigFile) {
 		cfg.Inputs.Materialize.InferWithLLM = &v
 	}
 	if len(cfg.Inputs.Materialize.DefaultInclude) == 0 {
-		cfg.Inputs.Materialize.DefaultInclude = []string{".ai/**"}
+		cfg.Inputs.Materialize.DefaultInclude = []string{".ai/*.md"}
 	}
 }
 

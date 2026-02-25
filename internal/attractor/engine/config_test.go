@@ -445,7 +445,7 @@ modeldb:
 		if m.InferWithLLM == nil || *m.InferWithLLM {
 			t.Fatal("inputs.materialize.infer_with_llm default: expected false")
 		}
-		if got, want := strings.Join(m.DefaultInclude, ","), ".ai/**"; got != want {
+		if got, want := strings.Join(m.DefaultInclude, ","), ".ai/*.md"; got != want {
 			t.Fatalf("inputs.materialize.default_include default: got %q want %q", got, want)
 		}
 	})

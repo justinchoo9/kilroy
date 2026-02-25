@@ -142,6 +142,52 @@ func TestInputMaterialization_DefaultIncludeWithoutMatchesDoesNotFail(t *testing
 	}
 }
 
+func TestInputMaterialization_DefaultIncludeSkipsArtifactDocsForReferenceTraversal(t *testing.T) {
+	source := t.TempDir()
+	target := t.TempDir()
+
+	mustWriteInputFile(t, filepath.Join(source, ".ai", "definition_of_done.md"), "See [tests](../tests.md)\n")
+	mustWriteInputFile(t, filepath.Join(source, "tests.md"), "integration checks\n")
+	mustWriteInputFile(t, filepath.Join(source, ".ai", "benchmarks", "run1", "logs", "prompt.md"), "See [noise](../../../../docs/noise.md)\n")
+	mustWriteInputFile(t, filepath.Join(source, "docs", "noise.md"), "artifact noise\n")
+
+	_, err := materializeInputClosure(context.Background(), InputMaterializationOptions{
+		SourceRoots:      []string{source},
+		DefaultInclude:   []string{".ai/**"},
+		FollowReferences: true,
+		TargetRoot:       target,
+	})
+	if err != nil {
+		t.Fatalf("materializeInputClosure: %v", err)
+	}
+
+	assertExists(t, filepath.Join(target, ".ai", "definition_of_done.md"))
+	assertExists(t, filepath.Join(target, "tests.md"))
+	if _, statErr := os.Stat(filepath.Join(target, "docs", "noise.md")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected artifact-only reference to be skipped, stat err=%v", statErr)
+	}
+}
+
+func TestInputMaterialization_ExplicitIncludeTraversesArtifactDocs(t *testing.T) {
+	source := t.TempDir()
+	target := t.TempDir()
+
+	mustWriteInputFile(t, filepath.Join(source, ".ai", "benchmarks", "run1", "logs", "prompt.md"), "See [required](../../../../docs/required.md)\n")
+	mustWriteInputFile(t, filepath.Join(source, "docs", "required.md"), "must materialize\n")
+
+	_, err := materializeInputClosure(context.Background(), InputMaterializationOptions{
+		SourceRoots:      []string{source},
+		Include:          []string{".ai/benchmarks/**/prompt.md"},
+		FollowReferences: true,
+		TargetRoot:       target,
+	})
+	if err != nil {
+		t.Fatalf("materializeInputClosure: %v", err)
+	}
+
+	assertExists(t, filepath.Join(target, "docs", "required.md"))
+}
+
 func mustWriteInputFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

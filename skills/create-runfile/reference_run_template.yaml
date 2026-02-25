@@ -45,7 +45,7 @@ inputs:
     enabled: true
     include: []
     default_include:
-      - ".ai/**"
+      - ".ai/*.md"
     follow_references: true
     infer_with_llm: false
     # To enable inference, set both fields explicitly:
