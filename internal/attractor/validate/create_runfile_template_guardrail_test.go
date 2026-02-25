@@ -119,3 +119,25 @@ func TestCreateRunfileTemplate_UsesArtifactPolicyCheckpointExcludes(t *testing.T
 		t.Fatal("artifact_policy.checkpoint.exclude_globs must not be empty")
 	}
 }
+
+func TestCreateRunfileTemplate_IncludesInputMaterializationContract(t *testing.T) {
+	template := loadCreateRunfileTemplateMap(t)
+	inputs := asMap(t, template["inputs"], "inputs")
+	materialize := asMap(t, inputs["materialize"], "inputs.materialize")
+
+	if _, ok := materialize["enabled"]; !ok {
+		t.Fatal("template must include inputs.materialize.enabled")
+	}
+	if _, ok := materialize["include"]; !ok {
+		t.Fatal("template must include inputs.materialize.include")
+	}
+	if _, ok := materialize["default_include"]; !ok {
+		t.Fatal("template must include inputs.materialize.default_include")
+	}
+	if _, ok := materialize["follow_references"]; !ok {
+		t.Fatal("template must include inputs.materialize.follow_references")
+	}
+	if _, ok := materialize["infer_with_llm"]; !ok {
+		t.Fatal("template must include inputs.materialize.infer_with_llm")
+	}
+}

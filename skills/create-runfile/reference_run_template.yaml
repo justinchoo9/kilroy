@@ -40,6 +40,18 @@ git:
   run_branch_prefix: attractor/run
   commit_per_node: true
 
+inputs:
+  materialize:
+    enabled: true
+    include: []
+    default_include:
+      - ".ai/**"
+    follow_references: true
+    infer_with_llm: false
+    # To enable inference, set both fields explicitly:
+    # llm_provider: openai
+    # llm_model: gpt-5
+
 # artifact_policy: language-specific env and checkpoint config.
 # The engine applies only what is declared here — no implicit defaults.
 # See skills/shared/profile_default_env.yaml for per-language reference values.

@@ -363,6 +363,118 @@ func loadRunConfigFromBytesForTest(t *testing.T, yml []byte) (*RunConfigFile, er
 	return LoadRunConfigFile(p)
 }
 
+func TestLoadRunConfigFile_InputMaterializationConfig(t *testing.T) {
+	yml := []byte(`
+version: 1
+repo:
+  path: /tmp/repo
+cxdb:
+  binary_addr: 127.0.0.1:9009
+  http_base_url: http://127.0.0.1:9010
+llm:
+  providers:
+    openai:
+      backend: api
+modeldb:
+  openrouter_model_info_path: /tmp/catalog.json
+inputs:
+  materialize:
+    enabled: true
+    include:
+      - .ai/**
+      - C:/Users/me/**/*.md
+    default_include:
+      - docs/**/*.md
+    follow_references: true
+    infer_with_llm: true
+    llm_provider: openai
+    llm_model: gpt-5
+`)
+	cfg, err := loadRunConfigFromBytesForTest(t, yml)
+	if err != nil {
+		t.Fatalf("LoadRunConfigFile: %v", err)
+	}
+	m := cfg.Inputs.Materialize
+	if m.Enabled == nil || !*m.Enabled {
+		t.Fatal("inputs.materialize.enabled: expected true")
+	}
+	if got, want := strings.Join(m.Include, ","), ".ai/**,C:/Users/me/**/*.md"; got != want {
+		t.Fatalf("inputs.materialize.include: got %q want %q", got, want)
+	}
+	if got, want := strings.Join(m.DefaultInclude, ","), "docs/**/*.md"; got != want {
+		t.Fatalf("inputs.materialize.default_include: got %q want %q", got, want)
+	}
+	if m.FollowReferences == nil || !*m.FollowReferences {
+		t.Fatal("inputs.materialize.follow_references: expected true")
+	}
+	if m.InferWithLLM == nil || !*m.InferWithLLM {
+		t.Fatal("inputs.materialize.infer_with_llm: expected true")
+	}
+	if got, want := m.LLMProvider, "openai"; got != want {
+		t.Fatalf("inputs.materialize.llm_provider: got %q want %q", got, want)
+	}
+	if got, want := m.LLMModel, "gpt-5"; got != want {
+		t.Fatalf("inputs.materialize.llm_model: got %q want %q", got, want)
+	}
+}
+
+func TestLoadRunConfigFile_InputMaterializationDefaultsAndValidation(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		yml := []byte(`
+version: 1
+repo:
+  path: /tmp/repo
+cxdb:
+  binary_addr: 127.0.0.1:9009
+  http_base_url: http://127.0.0.1:9010
+llm:
+  providers:
+    openai:
+      backend: api
+modeldb:
+  openrouter_model_info_path: /tmp/catalog.json
+`)
+		cfg, err := loadRunConfigFromBytesForTest(t, yml)
+		if err != nil {
+			t.Fatalf("LoadRunConfigFile: %v", err)
+		}
+		m := cfg.Inputs.Materialize
+		if m.Enabled == nil || !*m.Enabled {
+			t.Fatal("inputs.materialize.enabled default: expected true")
+		}
+		if m.InferWithLLM == nil || *m.InferWithLLM {
+			t.Fatal("inputs.materialize.infer_with_llm default: expected false")
+		}
+		if got, want := strings.Join(m.DefaultInclude, ","), ".ai/**"; got != want {
+			t.Fatalf("inputs.materialize.default_include default: got %q want %q", got, want)
+		}
+	})
+
+	t.Run("infer_requires_model_and_provider", func(t *testing.T) {
+		yml := []byte(`
+version: 1
+repo:
+  path: /tmp/repo
+cxdb:
+  binary_addr: 127.0.0.1:9009
+  http_base_url: http://127.0.0.1:9010
+llm:
+  providers:
+    openai:
+      backend: api
+modeldb:
+  openrouter_model_info_path: /tmp/catalog.json
+inputs:
+  materialize:
+    infer_with_llm: true
+`)
+		_, err := loadRunConfigFromBytesForTest(t, yml)
+		if err == nil || !strings.Contains(err.Error(), "inputs.materialize.llm_provider") {
+			t.Fatalf("expected llm_provider validation error, got: %v", err)
+		}
+	})
+}
+
 func TestLoadRunConfig_CustomAPIProviderRequiresProtocol(t *testing.T) {
 	yml := []byte(`
 version: 1

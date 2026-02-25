@@ -58,6 +58,20 @@ type PreflightConfig struct {
 	PromptProbes PromptProbeConfig `json:"prompt_probes,omitempty" yaml:"prompt_probes,omitempty"`
 }
 
+type InputMaterializationConfig struct {
+	Enabled          *bool    `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Include          []string `json:"include,omitempty" yaml:"include,omitempty"`
+	DefaultInclude   []string `json:"default_include,omitempty" yaml:"default_include,omitempty"`
+	FollowReferences *bool    `json:"follow_references,omitempty" yaml:"follow_references,omitempty"`
+	InferWithLLM     *bool    `json:"infer_with_llm,omitempty" yaml:"infer_with_llm,omitempty"`
+	LLMModel         string   `json:"llm_model,omitempty" yaml:"llm_model,omitempty"`
+	LLMProvider      string   `json:"llm_provider,omitempty" yaml:"llm_provider,omitempty"`
+}
+
+type InputConfig struct {
+	Materialize InputMaterializationConfig `json:"materialize,omitempty" yaml:"materialize,omitempty"`
+}
+
 type RunConfigFile struct {
 	Version int `json:"version" yaml:"version"`
 	// Graph and Task are optional operator metadata fields used by wrappers/UI.
@@ -114,6 +128,7 @@ type RunConfigFile struct {
 
 	RuntimePolicy RuntimePolicyConfig `json:"runtime_policy,omitempty" yaml:"runtime_policy,omitempty"`
 	Preflight     PreflightConfig     `json:"preflight,omitempty" yaml:"preflight,omitempty"`
+	Inputs        InputConfig         `json:"inputs,omitempty" yaml:"inputs,omitempty"`
 }
 
 func LoadRunConfigFile(path string) (*RunConfigFile, error) {
@@ -252,6 +267,25 @@ func applyConfigDefaults(cfg *RunConfigFile) {
 	}
 
 	cfg.Preflight.PromptProbes.Transports = trimNonEmpty(cfg.Preflight.PromptProbes.Transports)
+	cfg.Inputs.Materialize.Include = trimNonEmpty(cfg.Inputs.Materialize.Include)
+	cfg.Inputs.Materialize.DefaultInclude = trimNonEmpty(cfg.Inputs.Materialize.DefaultInclude)
+	cfg.Inputs.Materialize.LLMProvider = strings.TrimSpace(cfg.Inputs.Materialize.LLMProvider)
+	cfg.Inputs.Materialize.LLMModel = strings.TrimSpace(cfg.Inputs.Materialize.LLMModel)
+	if cfg.Inputs.Materialize.Enabled == nil {
+		v := true
+		cfg.Inputs.Materialize.Enabled = &v
+	}
+	if cfg.Inputs.Materialize.FollowReferences == nil {
+		v := true
+		cfg.Inputs.Materialize.FollowReferences = &v
+	}
+	if cfg.Inputs.Materialize.InferWithLLM == nil {
+		v := false
+		cfg.Inputs.Materialize.InferWithLLM = &v
+	}
+	if len(cfg.Inputs.Materialize.DefaultInclude) == 0 {
+		cfg.Inputs.Materialize.DefaultInclude = []string{".ai/**"}
+	}
 }
 
 func validateConfig(cfg *RunConfigFile) error {
@@ -361,6 +395,14 @@ func validateConfig(cfg *RunConfigFile) error {
 	}
 	if err := validateArtifactPolicyConfig(cfg); err != nil {
 		return err
+	}
+	if cfg.Inputs.Materialize.InferWithLLM != nil && *cfg.Inputs.Materialize.InferWithLLM {
+		if strings.TrimSpace(cfg.Inputs.Materialize.LLMProvider) == "" {
+			return fmt.Errorf("inputs.materialize.llm_provider is required when inputs.materialize.infer_with_llm=true")
+		}
+		if strings.TrimSpace(cfg.Inputs.Materialize.LLMModel) == "" {
+			return fmt.Errorf("inputs.materialize.llm_model is required when inputs.materialize.infer_with_llm=true")
+		}
 	}
 	return nil
 }
