@@ -316,6 +316,23 @@ func (h *CodergenHandler) Execute(ctx context.Context, exec *Execution, node *mo
 			}
 		}
 	}
+	if exec != nil && exec.Context != nil {
+		dossierPath := strings.TrimSpace(exec.Context.GetString(failureDossierContextPathKey, ""))
+		if dossierPath != "" {
+			logsPath := strings.TrimSpace(exec.Context.GetString(failureDossierContextLogsPathKey, ""))
+			if logsPath == "" {
+				logsPath = dossierPath
+			}
+			preamble := strings.TrimSpace(mustRenderFailureDossierPromptPreamble(dossierPath, logsPath))
+			if preamble != "" {
+				if strings.TrimSpace(promptText) == "" {
+					promptText = preamble
+				} else {
+					promptText = preamble + "\n\n" + strings.TrimSpace(promptText)
+				}
+			}
+		}
+	}
 	if exec != nil && exec.Engine != nil && strings.TrimSpace(contract.PrimaryPath) != "" {
 		exec.Engine.appendProgress(map[string]any{
 			"event":                "status_contract",
