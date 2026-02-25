@@ -1,0 +1,509 @@
+package engine
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/bmatcuk/doublestar/v4"
+)
+
+type InputSourceTargetMapEntry struct {
+	Source string `json:"source"`
+	Target string `json:"target"`
+}
+
+type InputManifest struct {
+	Sources                      []string                    `json:"sources"`
+	ResolvedFiles                []string                    `json:"resolved_files"`
+	SourceTargetMap              []InputSourceTargetMapEntry `json:"source_target_map"`
+	DiscoveredReferences         []DiscoveredInputReference  `json:"discovered_references"`
+	UnresolvedInferredReferences []string                    `json:"unresolved_inferred_references,omitempty"`
+	Warnings                     []string                    `json:"warnings,omitempty"`
+	GeneratedAt                  string                      `json:"generated_at"`
+}
+
+type InputMaterializationOptions struct {
+	SourceRoots             []string
+	Include                 []string
+	DefaultInclude          []string
+	FollowReferences        bool
+	TargetRoot              string
+	SnapshotRoot            string
+	ExistingSourceTargetMap map[string]string
+	Scanner                 InputReferenceScanner
+}
+
+type inputIncludeMissingError struct {
+	Patterns []string
+}
+
+func (e *inputIncludeMissingError) Error() string {
+	if e == nil || len(e.Patterns) == 0 {
+		return "input_include_missing"
+	}
+	return fmt.Sprintf("input_include_missing: unmatched include patterns: %s", strings.Join(e.Patterns, ", "))
+}
+
+func materializeInputClosure(ctx context.Context, opts InputMaterializationOptions) (*InputManifest, error) {
+	roots, err := normalizeInputRoots(opts.SourceRoots)
+	if err != nil {
+		return nil, err
+	}
+	if len(roots) == 0 {
+		return nil, fmt.Errorf("input materialization requires at least one source root")
+	}
+	if opts.Scanner == nil {
+		opts.Scanner = deterministicInputReferenceScanner{}
+	}
+
+	requiredSeeds, missingIncludes, err := expandInputSeedPatterns(opts.Include, roots)
+	if err != nil {
+		return nil, err
+	}
+	defaultSeeds, _, err := expandInputSeedPatterns(opts.DefaultInclude, roots)
+	if err != nil {
+		return nil, err
+	}
+	if len(missingIncludes) > 0 {
+		return nil, &inputIncludeMissingError{Patterns: missingIncludes}
+	}
+
+	resolved := map[string]bool{}
+	queued := map[string]bool{}
+	queue := make([]string, 0, len(requiredSeeds)+len(defaultSeeds))
+	push := func(paths ...string) {
+		for _, p := range paths {
+			abs, aerr := filepath.Abs(strings.TrimSpace(p))
+			if aerr != nil {
+				continue
+			}
+			if queued[abs] {
+				continue
+			}
+			queued[abs] = true
+			queue = append(queue, abs)
+		}
+	}
+	push(requiredSeeds...)
+	push(defaultSeeds...)
+
+	discovered := make([]DiscoveredInputReference, 0, 16)
+	warnings := make([]string, 0, 4)
+
+	for len(queue) > 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		current := queue[0]
+		queue = queue[1:]
+		if resolved[current] {
+			continue
+		}
+		if !isRegularFile(current) {
+			continue
+		}
+		resolved[current] = true
+		if !opts.FollowReferences {
+			continue
+		}
+
+		content, readErr := os.ReadFile(current)
+		if readErr != nil {
+			warnings = append(warnings, fmt.Sprintf("read %s: %v", current, readErr))
+			continue
+		}
+		refs := opts.Scanner.Scan(current, content)
+		discovered = append(discovered, refs...)
+		for _, ref := range refs {
+			matches, matchErr := resolveInputReferenceCandidate(ref, current, roots, opts.ExistingSourceTargetMap)
+			if matchErr != nil {
+				warnings = append(warnings, matchErr.Error())
+				continue
+			}
+			push(matches...)
+		}
+	}
+
+	targetRoot := strings.TrimSpace(opts.TargetRoot)
+	snapshotRoot := strings.TrimSpace(opts.SnapshotRoot)
+	resolvedTargets := map[string]bool{}
+	sourceToTarget := map[string]string{}
+
+	resolvedSources := sortedStringSet(resolved)
+	for _, source := range resolvedSources {
+		targetRel := mapInputSourceToTargetPath(source, roots)
+		sourceToTarget[source] = targetRel
+		resolvedTargets[targetRel] = true
+		if targetRoot != "" {
+			if err := copyInputFile(source, filepath.Join(targetRoot, filepath.FromSlash(targetRel))); err != nil {
+				return nil, err
+			}
+		}
+		if snapshotRoot != "" {
+			if err := copyInputFile(source, filepath.Join(snapshotRoot, filepath.FromSlash(targetRel))); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	manifest := &InputManifest{
+		Sources:                      append([]string{}, roots...),
+		ResolvedFiles:                sortedStringSet(resolvedTargets),
+		SourceTargetMap:              sortedSourceTargetMap(sourceToTarget),
+		DiscoveredReferences:         sortDiscoveredReferences(discovered),
+		UnresolvedInferredReferences: nil,
+		Warnings:                     dedupeAndSortStrings(warnings),
+		GeneratedAt:                  time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	return manifest, nil
+}
+
+func resolveInputReferenceCandidate(ref DiscoveredInputReference, sourceFile string, roots []string, existingMap map[string]string) ([]string, error) {
+	pattern := strings.TrimSpace(ref.Pattern)
+	if pattern == "" {
+		return nil, nil
+	}
+	if ref.Kind == InputReferenceKindGlob {
+		return resolveGlobReference(pattern, sourceFile, roots, existingMap)
+	}
+	return resolvePathReference(pattern, sourceFile, roots, existingMap), nil
+}
+
+func resolvePathReference(pattern string, sourceFile string, roots []string, existingMap map[string]string) []string {
+	candidates := make([]string, 0, len(roots)+2)
+	if isAbsolutePathLike(pattern) {
+		candidates = append(candidates, pattern)
+		if rel, ok := lookupSourceTargetMapping(existingMap, pattern); ok {
+			for _, root := range roots {
+				candidates = append(candidates, filepath.Join(root, filepath.FromSlash(rel)))
+			}
+		}
+	} else {
+		base := filepath.Dir(sourceFile)
+		candidates = append(candidates, filepath.Join(base, filepath.FromSlash(pattern)))
+		for _, root := range roots {
+			candidates = append(candidates, filepath.Join(root, filepath.FromSlash(pattern)))
+		}
+	}
+	return existingRegularFiles(candidates)
+}
+
+func resolveGlobReference(pattern string, sourceFile string, roots []string, existingMap map[string]string) ([]string, error) {
+	globPatterns := make([]string, 0, len(roots)+2)
+	if isAbsolutePathLike(pattern) {
+		globPatterns = append(globPatterns, pattern)
+		if rel, ok := lookupSourceTargetMapping(existingMap, pattern); ok {
+			for _, root := range roots {
+				globPatterns = append(globPatterns, filepath.Join(root, filepath.FromSlash(rel)))
+			}
+		}
+	} else {
+		base := filepath.Dir(sourceFile)
+		globPatterns = append(globPatterns, filepath.Join(base, filepath.FromSlash(pattern)))
+		for _, root := range roots {
+			globPatterns = append(globPatterns, filepath.Join(root, filepath.FromSlash(pattern)))
+		}
+	}
+	matches := map[string]bool{}
+	for _, raw := range globPatterns {
+		glob := filepath.FromSlash(raw)
+		hits, err := doublestar.FilepathGlob(glob)
+		if err != nil {
+			return nil, fmt.Errorf("expand input glob %q: %w", pattern, err)
+		}
+		for _, hit := range hits {
+			if isRegularFile(hit) {
+				abs, err := filepath.Abs(hit)
+				if err == nil {
+					matches[abs] = true
+				}
+			}
+		}
+	}
+	return sortedStringSet(matches), nil
+}
+
+func expandInputSeedPatterns(patterns []string, roots []string) ([]string, []string, error) {
+	files := map[string]bool{}
+	missing := make([]string, 0)
+	for _, raw := range patterns {
+		pattern := strings.TrimSpace(raw)
+		if pattern == "" {
+			continue
+		}
+		matches, err := expandSeedPattern(pattern, roots)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(matches) == 0 {
+			missing = append(missing, pattern)
+			continue
+		}
+		for _, m := range matches {
+			files[m] = true
+		}
+	}
+	return sortedStringSet(files), dedupeAndSortStrings(missing), nil
+}
+
+func expandSeedPattern(pattern string, roots []string) ([]string, error) {
+	matches := map[string]bool{}
+	if isAbsolutePathLike(pattern) {
+		if containsGlobMeta(pattern) {
+			hits, err := doublestar.FilepathGlob(filepath.FromSlash(pattern))
+			if err != nil {
+				return nil, fmt.Errorf("expand input include %q: %w", pattern, err)
+			}
+			for _, hit := range hits {
+				if isRegularFile(hit) {
+					abs, aerr := filepath.Abs(hit)
+					if aerr == nil {
+						matches[abs] = true
+					}
+				}
+			}
+			return sortedStringSet(matches), nil
+		}
+		if isRegularFile(pattern) {
+			abs, err := filepath.Abs(pattern)
+			if err == nil {
+				matches[abs] = true
+			}
+		}
+		return sortedStringSet(matches), nil
+	}
+
+	for _, root := range roots {
+		if containsGlobMeta(pattern) {
+			hits, err := doublestar.FilepathGlob(filepath.Join(root, filepath.FromSlash(pattern)))
+			if err != nil {
+				return nil, fmt.Errorf("expand input include %q: %w", pattern, err)
+			}
+			for _, hit := range hits {
+				if isRegularFile(hit) {
+					abs, aerr := filepath.Abs(hit)
+					if aerr == nil {
+						matches[abs] = true
+					}
+				}
+			}
+			continue
+		}
+		candidate := filepath.Join(root, filepath.FromSlash(pattern))
+		if isRegularFile(candidate) {
+			abs, err := filepath.Abs(candidate)
+			if err == nil {
+				matches[abs] = true
+			}
+		}
+	}
+	return sortedStringSet(matches), nil
+}
+
+func mapInputSourceToTargetPath(source string, roots []string) string {
+	sourceAbs, err := filepath.Abs(source)
+	if err == nil {
+		source = sourceAbs
+	}
+	bestRoot := ""
+	bestRel := ""
+	for _, root := range roots {
+		rel, err := filepath.Rel(root, source)
+		if err != nil {
+			continue
+		}
+		rel = filepath.Clean(rel)
+		if rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+			continue
+		}
+		if len(root) > len(bestRoot) {
+			bestRoot = root
+			bestRel = rel
+		}
+	}
+	if bestRoot != "" {
+		return filepath.ToSlash(bestRel)
+	}
+
+	sum := sha256.Sum256([]byte(source))
+	prefix := hex.EncodeToString(sum[:])[:12]
+	sanitized := filepath.ToSlash(source)
+	sanitized = strings.TrimPrefix(sanitized, "/")
+	sanitized = strings.ReplaceAll(sanitized, ":", "_")
+	return filepath.ToSlash(filepath.Join(".kilroy-inputs", "external", prefix, sanitized))
+}
+
+func copyInputFile(source string, target string) error {
+	if !isRegularFile(source) {
+		return fmt.Errorf("input source is not a regular file: %s", source)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	src, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = src.Close() }()
+	info, err := src.Stat()
+	if err != nil {
+		return err
+	}
+	dst, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dst.Close() }()
+	if _, err := io.Copy(dst, src); err != nil {
+		return err
+	}
+	return nil
+}
+
+func normalizeInputRoots(roots []string) ([]string, error) {
+	out := make([]string, 0, len(roots))
+	seen := map[string]bool{}
+	for _, raw := range roots {
+		root := strings.TrimSpace(raw)
+		if root == "" {
+			continue
+		}
+		abs, err := filepath.Abs(root)
+		if err != nil {
+			return nil, err
+		}
+		if seen[abs] {
+			continue
+		}
+		seen[abs] = true
+		out = append(out, abs)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func sortedStringSet(set map[string]bool) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for key, ok := range set {
+		if ok {
+			out = append(out, key)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortDiscoveredReferences(in []DiscoveredInputReference) []DiscoveredInputReference {
+	if len(in) == 0 {
+		return nil
+	}
+	out := append([]DiscoveredInputReference{}, in...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].SourceFile != out[j].SourceFile {
+			return out[i].SourceFile < out[j].SourceFile
+		}
+		if out[i].Pattern != out[j].Pattern {
+			return out[i].Pattern < out[j].Pattern
+		}
+		return out[i].Matched < out[j].Matched
+	})
+	return out
+}
+
+func sortedSourceTargetMap(mapping map[string]string) []InputSourceTargetMapEntry {
+	if len(mapping) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(mapping))
+	for source := range mapping {
+		keys = append(keys, source)
+	}
+	sort.Strings(keys)
+	out := make([]InputSourceTargetMapEntry, 0, len(keys))
+	for _, source := range keys {
+		out = append(out, InputSourceTargetMapEntry{Source: source, Target: mapping[source]})
+	}
+	return out
+}
+
+func dedupeAndSortStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	set := map[string]bool{}
+	for _, raw := range in {
+		s := strings.TrimSpace(raw)
+		if s != "" {
+			set[s] = true
+		}
+	}
+	return sortedStringSet(set)
+}
+
+func existingRegularFiles(candidates []string) []string {
+	set := map[string]bool{}
+	for _, candidate := range candidates {
+		if !isRegularFile(candidate) {
+			continue
+		}
+		abs, err := filepath.Abs(candidate)
+		if err != nil {
+			continue
+		}
+		set[abs] = true
+	}
+	return sortedStringSet(set)
+}
+
+func lookupSourceTargetMapping(mapping map[string]string, absolutePath string) (string, bool) {
+	if len(mapping) == 0 {
+		return "", false
+	}
+	if rel, ok := mapping[absolutePath]; ok {
+		return rel, true
+	}
+	if rel, ok := mapping[filepath.Clean(absolutePath)]; ok {
+		return rel, true
+	}
+	normalized := strings.ReplaceAll(filepath.Clean(absolutePath), "\\", "/")
+	for source, rel := range mapping {
+		s := strings.ReplaceAll(filepath.Clean(source), "\\", "/")
+		if s == normalized {
+			return rel, true
+		}
+	}
+	return "", false
+}
+
+func isRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.Mode().IsRegular()
+}
+
+func containsGlobMeta(pattern string) bool {
+	return strings.ContainsAny(pattern, "*?[")
+}
+
+func isAbsolutePathLike(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	if filepath.IsAbs(path) {
+		return true
+	}
+	return windowsAbsPathRE.MatchString(path)
+}
