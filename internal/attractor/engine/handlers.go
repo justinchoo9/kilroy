@@ -523,7 +523,7 @@ func (h *ToolHandler) Execute(ctx context.Context, execCtx *Execution, node *mod
 	}
 	timeout := parseDuration(node.Attr("timeout", ""), 0)
 	if timeout <= 0 {
-		timeout = 10 * time.Second
+		timeout = 600 * time.Second
 	}
 
 	callID := ulid.Make().String()
