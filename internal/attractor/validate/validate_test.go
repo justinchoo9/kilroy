@@ -644,6 +644,89 @@ digraph G {
 	assertHasRule(t, diags, "template_postmortem_replan_entry", SeverityWarning)
 }
 
+// TestLintConditionSyntax_ValidConditions verifies that well-formed condition
+// expressions do not produce condition_syntax diagnostics — confirming that the
+// evaluator error-capture path (G2 fix) does not create false positives.
+func TestLintConditionSyntax_ValidConditions(t *testing.T) {
+	validConds := []string{
+		"outcome=success",
+		"outcome=fail",
+		"outcome!=success",
+		"outcome=success && outcome!=fail",
+		"outcome=approved",
+		"context.failure_class=transient_infra",
+		"context.failure_class!=transient_infra",
+		"preferred_label=Yes",
+		"my_key=some_value",
+	}
+
+	for _, cond := range validConds {
+		cond := cond
+		t.Run(cond, func(t *testing.T) {
+			dotSrc := `
+digraph G {
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="x"]
+  start -> a
+  a -> exit [condition="` + cond + `"]
+}
+`
+			g, err := dot.Parse([]byte(dotSrc))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			diags := lintConditionSyntax(g)
+			for _, d := range diags {
+				t.Errorf("unexpected condition_syntax diagnostic for %q: %s %s", cond, d.Severity, d.Message)
+			}
+		})
+	}
+}
+
+// TestLintConditionSyntax_EvaluatorErrorCaptured verifies that the G2 fix is
+// in place: the function signature of lintConditionSyntax now captures
+// (rather than discards) the evaluator's error return.  We test this
+// indirectly by confirming that the existing invalid-operator condition
+// (outcome>success) still produces a condition_syntax ERROR, and that a valid
+// condition (outcome=success) does not — ensuring we have not regressed the
+// existing detection path while adding the new capture.
+func TestLintConditionSyntax_EvaluatorCapture_NoRegressionOnKnownInvalid(t *testing.T) {
+	// Invalid condition: uses ">" which validateConditionSyntax rejects.
+	g, err := dot.Parse([]byte(`
+digraph G {
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="x"]
+  start -> a
+  a -> exit [condition="outcome>success"]
+}
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	diags := lintConditionSyntax(g)
+	assertHasRule(t, diags, "condition_syntax", SeverityError)
+
+	// Valid condition: must produce no condition_syntax diagnostic.
+	g2, err := dot.Parse([]byte(`
+digraph G {
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="x"]
+  start -> a
+  a -> exit [condition="outcome=success"]
+}
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	diags2 := lintConditionSyntax(g2)
+	for _, d := range diags2 {
+		t.Errorf("unexpected condition_syntax diagnostic for valid condition: %+v", d)
+	}
+}
+
 func assertHasRule(t *testing.T, diags []Diagnostic, rule string, sev Severity) {
 	t.Helper()
 	for _, d := range diags {
