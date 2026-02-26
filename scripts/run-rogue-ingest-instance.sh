@@ -74,9 +74,16 @@ sed -i \
   -e 's/llm_model="[a-zA-Z0-9_-]*\/[a-zA-Z0-9._-]*"/llm_model="gemini-2.0-flash"/g' \
   -e 's/llm_model: claude-[a-zA-Z0-9._-]*/llm_model: gemini-2.0-flash/g' \
   -e 's/llm_model="claude-[a-zA-Z0-9._-]*"/llm_model="gemini-2.0-flash"/g' \
+  -e 's/llm_model: gpt-[a-zA-Z0-9._-]*/llm_model: gemini-2.0-flash/g' \
+  -e 's/llm_model="gpt-[a-zA-Z0-9._-]*"/llm_model="gemini-2.0-flash"/g' \
+  -e 's/llm_model: o[0-9][a-zA-Z0-9._-]*/llm_model: gemini-2.0-flash/g' \
+  -e 's/llm_model="o[0-9][a-zA-Z0-9._-]*"/llm_model="gemini-2.0-flash"/g' \
+  -e 's/llm_model: gemini-[3-9][a-zA-Z0-9._-]*/llm_model: gemini-2.0-flash/g' \
+  -e 's/llm_model="gemini-[3-9][a-zA-Z0-9._-]*"/llm_model="gemini-2.0-flash"/g' \
   "$GENERATED_DOT"
-REMAINING=$(grep -cE 'llm_provider[: ="]+[^g]' "$GENERATED_DOT" 2>/dev/null || echo "0")
-echo "Normalized: $(grep -c 'google' "$GENERATED_DOT") google refs, $REMAINING non-google refs remaining" | tee -a "$OUTPUT_FILE"
+REMAINING_PROVIDERS=$(grep -cE 'llm_provider[: ="]+[^g]' "$GENERATED_DOT" 2>/dev/null || echo "0")
+REMAINING_MODELS=$(grep -cE 'llm_model[: ="]+(gpt-|o[0-9]|claude-)' "$GENERATED_DOT" 2>/dev/null || echo "0")
+echo "Normalized: $(grep -c 'google' "$GENERATED_DOT") google refs, $REMAINING_PROVIDERS non-google provider refs, $REMAINING_MODELS non-google model refs remaining" | tee -a "$OUTPUT_FILE"
 
 echo "" | tee -a "$OUTPUT_FILE"
 echo "=== Generated DOT ($GENERATED_DOT) ===" | tee -a "$OUTPUT_FILE"
