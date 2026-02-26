@@ -54,36 +54,31 @@ kilroy attractor ingest \
 echo "" | tee -a "$OUTPUT_FILE"
 echo "=== Normalizing provider references (all -> google) ===" | tee -a "$OUTPUT_FILE"
 # run-kilroy-compose.yaml uses google (Gemini) as the primary backend.
-# Replace ALL non-google provider references so the generated DOT can run.
+# Step 1: targeted sed for common providers/models (fast path)
 sed -i \
-  -e 's/llm_provider: openrouter/llm_provider: google/g' \
-  -e 's/llm_provider="openrouter"/llm_provider="google"/g' \
-  -e 's/llm_provider: openai/llm_provider: google/g' \
-  -e 's/llm_provider="openai"/llm_provider="google"/g' \
-  -e 's/llm_provider: anthropic/llm_provider: google/g' \
-  -e 's/llm_provider="anthropic"/llm_provider="google"/g' \
-  -e 's/llm_provider: cerebras/llm_provider: google/g' \
-  -e 's/llm_provider="cerebras"/llm_provider="google"/g' \
-  -e 's/llm_provider: kimi/llm_provider: google/g' \
-  -e 's/llm_provider="kimi"/llm_provider="google"/g' \
-  -e 's/llm_provider: minimax/llm_provider: google/g' \
-  -e 's/llm_provider="minimax"/llm_provider="google"/g' \
-  -e 's/llm_provider: zai/llm_provider: google/g' \
-  -e 's/llm_provider="zai"/llm_provider="google"/g' \
   -e 's/llm_model: [a-zA-Z0-9_-]*\/[a-zA-Z0-9._-]*/llm_model: gemini-2.0-flash/g' \
   -e 's/llm_model="[a-zA-Z0-9_-]*\/[a-zA-Z0-9._-]*"/llm_model="gemini-2.0-flash"/g' \
-  -e 's/llm_model: claude-[a-zA-Z0-9._-]*/llm_model: gemini-2.0-flash/g' \
-  -e 's/llm_model="claude-[a-zA-Z0-9._-]*"/llm_model="gemini-2.0-flash"/g' \
-  -e 's/llm_model: gpt-[a-zA-Z0-9._-]*/llm_model: gemini-2.0-flash/g' \
-  -e 's/llm_model="gpt-[a-zA-Z0-9._-]*"/llm_model="gemini-2.0-flash"/g' \
-  -e 's/llm_model: o[0-9][a-zA-Z0-9._-]*/llm_model: gemini-2.0-flash/g' \
-  -e 's/llm_model="o[0-9][a-zA-Z0-9._-]*"/llm_model="gemini-2.0-flash"/g' \
-  -e 's/llm_model: gemini-[3-9][a-zA-Z0-9._-]*/llm_model: gemini-2.0-flash/g' \
-  -e 's/llm_model="gemini-[3-9][a-zA-Z0-9._-]*"/llm_model="gemini-2.0-flash"/g' \
   "$GENERATED_DOT"
-REMAINING_PROVIDERS=$(grep -cE 'llm_provider[: ="]+[^g]' "$GENERATED_DOT" 2>/dev/null || echo "0")
-REMAINING_MODELS=$(grep -cE 'llm_model[: ="]+(gpt-|o[0-9]|claude-)' "$GENERATED_DOT" 2>/dev/null || echo "0")
-echo "Normalized: $(grep -c 'google' "$GENERATED_DOT") google refs, $REMAINING_PROVIDERS non-google provider refs, $REMAINING_MODELS non-google model refs remaining" | tee -a "$OUTPUT_FILE"
+# Step 2: Python catch-all — replace ANY remaining non-google provider and
+# ANY remaining non-gemini-2.0-flash model. Handles deepseek, mistral, llama,
+# qwen, and any other model family the ingestor may hallucinate.
+python3 - "$GENERATED_DOT" << 'PYEOF'
+import re, sys
+path = sys.argv[1]
+with open(path) as f:
+    c = f.read()
+# All providers → google
+c = re.sub(r'llm_provider:\s+\S+', 'llm_provider: google', c)
+c = re.sub(r'llm_provider\s*=\s*"[^"]*"', 'llm_provider="google"', c)
+# All models → gemini-2.0-flash
+c = re.sub(r'llm_model:\s+\S+', 'llm_model: gemini-2.0-flash', c)
+c = re.sub(r'llm_model\s*=\s*"[^"]*"', 'llm_model="gemini-2.0-flash"', c)
+with open(path, 'w') as f:
+    f.write(c)
+PYEOF
+REMAINING_PROVIDERS=$(grep -cP 'llm_provider[: ="]+(?!google)[a-zA-Z]' "$GENERATED_DOT" 2>/dev/null || echo "0")
+REMAINING_MODELS=$(grep -cP 'llm_model[: ="]+(?!gemini-2\.0-flash)[a-zA-Z]' "$GENERATED_DOT" 2>/dev/null || echo "0")
+echo "Normalized: $(grep -c 'google' "$GENERATED_DOT") google refs, $REMAINING_PROVIDERS non-google provider refs, $REMAINING_MODELS non-gemini-2.0-flash model refs remaining" | tee -a "$OUTPUT_FILE"
 
 echo "" | tee -a "$OUTPUT_FILE"
 echo "=== Generated DOT ($GENERATED_DOT) ===" | tee -a "$OUTPUT_FILE"
