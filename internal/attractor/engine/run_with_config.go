@@ -35,6 +35,12 @@ func RunWithConfig(ctx context.Context, dotSource []byte, cfg *RunConfigFile, ov
 		}
 		// On error, earlyCatalog remains nil — model ID checks are skipped,
 		// all other lint rules still run (degraded mode).
+	} else {
+		// No pinned path configured — fall back to the embedded catalog so
+		// model ID lint rules fire even without an explicit modeldb config.
+		if cat, catErr := modeldb.LoadEmbeddedCatalog(); catErr == nil {
+			earlyCatalog = cat
+		}
 	}
 
 	// Prepare graph (parse + transforms + validate).
