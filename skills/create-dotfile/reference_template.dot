@@ -111,7 +111,7 @@ digraph reference_template {
         //   - Read .ai/spec.md for context
         //   - Resolve contradictions, apply DoD rubric + coverage checklist
         // Writes: .ai/definition_of_done.md
-        consolidate_dod []
+        consolidate_dod [auto_status=true]
     }
 
     subgraph cluster_planning {
@@ -144,7 +144,7 @@ digraph reference_template {
         //     every identified issue
         //   - Resolve conflicts, ensure dependency order
         // Writes: .ai/plan_final.md
-        debate_consolidate []
+        debate_consolidate [auto_status=true]
     }
 
     subgraph cluster_implement_verify {
@@ -259,7 +259,7 @@ digraph reference_template {
         //   - Consensus: 2+ APPROVED with no critical gaps -> success;
         //     otherwise -> retry with specific issues
         // Writes: .ai/review_consensus.md
-        review_consensus [goal_gate=true]
+        review_consensus [auto_status=true, goal_gate=true]
     }
 
     subgraph cluster_postmortem {
@@ -284,7 +284,7 @@ digraph reference_template {
         //   - When uncertain, default to impl_repair
         // Writes: .ai/postmortem_latest.md (overwrite previous)
         // Note: status reflects analysis completion, not implementation state
-        postmortem []
+        postmortem [auto_status=true]
     }
 
     // =========================================================================
