@@ -859,3 +859,83 @@ digraph G {
 	}
 	t.Fatal("expected exit_no_outgoing diagnostic for exit2")
 }
+
+// --- Tests for all_conditional_edges lint rule (G3) ---
+
+func TestValidate_AllConditionalEdges_Error(t *testing.T) {
+	// A non-terminal node with only conditional outgoing edges must produce
+	// an ERROR (not a warning) — no unconditional fallback means the engine
+	// may silently misroute via the step-5 fallback path.
+	g, err := dot.Parse([]byte(`
+digraph G {
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="x"]
+  b [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="y"]
+  c [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="z"]
+  start -> a
+  a -> b [condition="outcome=success"]
+  a -> c [condition="outcome=fail"]
+  b -> exit
+  c -> exit
+}
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	diags := Validate(g)
+	assertHasRule(t, diags, "all_conditional_edges", SeverityError)
+}
+
+func TestValidate_AllConditionalEdges_NoErrorWithUnconditionalFallback(t *testing.T) {
+	// When a node has at least one unconditional edge, the rule must not fire.
+	g, err := dot.Parse([]byte(`
+digraph G {
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="x"]
+  b [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="y"]
+  c [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="z"]
+  start -> a
+  a -> b [condition="outcome=success"]
+  a -> c
+  b -> exit
+  c -> exit
+}
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	diags := Validate(g)
+	assertNoRule(t, diags, "all_conditional_edges")
+}
+
+func TestValidate_AllConditionalEdges_NodeIDInDiagnostic(t *testing.T) {
+	// The diagnostic must identify the specific node that violates the rule.
+	g, err := dot.Parse([]byte(`
+digraph G {
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  gate [shape=diamond]
+  ok   [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="x"]
+  start -> gate
+  gate -> ok  [condition="outcome=success"]
+  gate -> exit [condition="outcome=fail"]
+  ok -> exit
+}
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	diags := Validate(g)
+	found := false
+	for _, d := range diags {
+		if d.Rule == "all_conditional_edges" && d.Severity == SeverityError && d.NodeID == "gate" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected all_conditional_edges ERROR for node gate; diags=%v", diags)
+	}
+}
