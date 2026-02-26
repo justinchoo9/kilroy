@@ -67,6 +67,7 @@ func Validate(g *model.Graph, extraRules ...LintRule) []Diagnostic {
 	diags = append(diags, lintFailLoopFailureClassGuard(g)...)
 	diags = append(diags, lintEscalationModelsSyntax(g)...)
 	diags = append(diags, lintAllConditionalEdges(g)...)
+	diags = append(diags, lintStatusFallbackInPrompt(g)...)
 	diags = append(diags, lintTemplatePostmortemRecoveryRouting(g)...)
 	diags = append(diags, lintOrphanCustomOutcomeHint(g)...)
 
@@ -1360,4 +1361,38 @@ func edgeHasCustomOutcomeCondition(condExpr string) bool {
 		}
 	}
 	return false
+}
+
+// lintStatusFallbackInPrompt warns when a codergen (shape=box) node's prompt
+// references the primary status path ($KILROY_STAGE_STATUS_PATH) but omits the
+// fallback path ($KILROY_STAGE_STATUS_FALLBACK_PATH). Without a fallback, a
+// failed primary write leaves the engine with no recovery signal.
+//
+// Rule: status_fallback_in_prompt (WARNING)
+func lintStatusFallbackInPrompt(g *model.Graph) []Diagnostic {
+	var diags []Diagnostic
+	for id, n := range g.Nodes {
+		if n == nil {
+			continue
+		}
+		if n.Shape() != "box" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(n.Attr("auto_status", "false")), "true") {
+			continue
+		}
+		prompt := n.Prompt()
+		hasPrimary := strings.Contains(prompt, "KILROY_STAGE_STATUS_PATH")
+		hasFallback := strings.Contains(prompt, "KILROY_STAGE_STATUS_FALLBACK_PATH")
+		if hasPrimary && !hasFallback {
+			diags = append(diags, Diagnostic{
+				Rule:     "status_fallback_in_prompt",
+				Severity: SeverityWarning,
+				Message:  "codergen node prompt references $KILROY_STAGE_STATUS_PATH but omits $KILROY_STAGE_STATUS_FALLBACK_PATH; if the primary write fails the engine has no recovery signal",
+				NodeID:   id,
+				Fix:      "add $KILROY_STAGE_STATUS_FALLBACK_PATH alongside $KILROY_STAGE_STATUS_PATH in the node prompt",
+			})
+		}
+	}
+	return diags
 }
