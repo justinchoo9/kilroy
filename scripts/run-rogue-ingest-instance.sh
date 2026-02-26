@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# run-rogue-ingest-instance.sh N
+#
+# For instance N:
+#   1. Reads demo/rogue/rogue-prompt.txt from the kilroy repo.
+#   2. Runs `kilroy attractor ingest` to generate a DOT pipeline from that prompt.
+#   3. Runs the generated DOT via `kilroy attractor run`.
+#
+# Writes output artifacts to .kilroy/ relative to KILROY_WORKTREE_DIR (or CWD):
+#   .kilroy/run_N_generated.dot  — the ingest-produced DOT file
+#   .kilroy/run_N_output.txt     — combined stdout from both phases
+#   .kilroy/run_N_meta.json      — run metadata (times, status, exit code)
+set -euo pipefail
+
+N="${1:-1}"
+
+# Resolve the kilroy repo root from KILROY_SCRIPTS_DIR (set by attractor) or hardcoded fallback.
+SCRIPTS_DIR="${KILROY_SCRIPTS_DIR:-/workspace/project/.kilroy/repos/kilroy/scripts}"
+KILROY_REPO_ROOT="$(cd "$SCRIPTS_DIR/.." && pwd)"
+
+PROMPT_FILE="$KILROY_REPO_ROOT/demo/rogue/rogue-prompt.txt"
+SKILL_PATH="$KILROY_REPO_ROOT/skills/create-dotfile/SKILL.md"
+CONFIG="/workspace/project/run-kilroy-compose.yaml"
+
+# Write artifacts into .kilroy/ in the worktree (or CWD if env not set).
+OUTDIR="${KILROY_WORKTREE_DIR:-.}/.kilroy"
+mkdir -p "$OUTDIR"
+
+GENERATED_DOT="$OUTDIR/run_${N}_generated.dot"
+OUTPUT_FILE="$OUTDIR/run_${N}_output.txt"
+META_FILE="$OUTDIR/run_${N}_meta.json"
+
+: > "$OUTPUT_FILE"
+
+echo "=== Instance $N: Ingesting rogue prompt ===" | tee -a "$OUTPUT_FILE"
+echo "Prompt file: $PROMPT_FILE" | tee -a "$OUTPUT_FILE"
+echo "Skill:       $SKILL_PATH" | tee -a "$OUTPUT_FILE"
+echo "Config:      $CONFIG" | tee -a "$OUTPUT_FILE"
+echo "" | tee -a "$OUTPUT_FILE"
+
+if [ ! -f "$PROMPT_FILE" ]; then
+  echo "ERROR: prompt file not found: $PROMPT_FILE" | tee -a "$OUTPUT_FILE"
+  exit 1
+fi
+
+PROMPT=$(cat "$PROMPT_FILE")
+
+kilroy attractor ingest \
+  --output "$GENERATED_DOT" \
+  --skill "$SKILL_PATH" \
+  --repo "$KILROY_REPO_ROOT" \
+  "$PROMPT" 2>&1 | tee -a "$OUTPUT_FILE"
+
+echo "" | tee -a "$OUTPUT_FILE"
+echo "=== Normalizing provider references (openrouter -> anthropic) ===" | tee -a "$OUTPUT_FILE"
+# run-kilroy-compose.yaml only has the anthropic backend configured.
+# Replace any openrouter provider/model references so the generated DOT can actually run.
+sed -i \
+  -e 's/llm_provider: openrouter/llm_provider: anthropic/g' \
+  -e 's/llm_provider="openrouter"/llm_provider="anthropic"/g' \
+  -e 's/llm_model: [a-z][a-z0-9_-]*\/[a-z][a-z0-9._-]*/llm_model: claude-sonnet-4-6/g' \
+  -e 's/llm_model="[a-z][a-z0-9_-]*\/[a-z][a-z0-9._-]*"/llm_model="claude-sonnet-4-6"/g' \
+  "$GENERATED_DOT"
+echo "Normalized: $(grep -c 'anthropic' "$GENERATED_DOT") anthropic references" | tee -a "$OUTPUT_FILE"
+
+echo "" | tee -a "$OUTPUT_FILE"
+echo "=== Generated DOT ($GENERATED_DOT) ===" | tee -a "$OUTPUT_FILE"
+cat "$GENERATED_DOT" | tee -a "$OUTPUT_FILE"
+echo "" | tee -a "$OUTPUT_FILE"
+
+START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+printf '{"instance":%s,"started_at":"%s","generated_dot":"%s"}\n' \
+  "$N" "$START" "$GENERATED_DOT" > "$META_FILE"
+
+echo "=== Instance $N: Running generated pipeline ===" | tee -a "$OUTPUT_FILE"
+set +e
+kilroy attractor run --skip-cli-headless-warning \
+  --graph "$GENERATED_DOT" \
+  --config "$CONFIG" 2>&1 | tee -a "$OUTPUT_FILE"
+RUN_EXIT=$?
+set -e
+
+END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+STATUS="success"
+[ "$RUN_EXIT" != "0" ] && STATUS="fail"
+
+printf '{"instance":%s,"started_at":"%s","ended_at":"%s","status":"%s","exit_code":%s,"generated_dot":"%s"}\n' \
+  "$N" "$START" "$END" "$STATUS" "$RUN_EXIT" "$GENERATED_DOT" > "$META_FILE"
+
+echo "" | tee -a "$OUTPUT_FILE"
+echo "=== Instance $N done: status=$STATUS exit_code=$RUN_EXIT ===" | tee -a "$OUTPUT_FILE"
+
+exit "$RUN_EXIT"
