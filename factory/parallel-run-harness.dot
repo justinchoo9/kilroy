@@ -21,8 +21,8 @@ digraph ParallelRunHarness {
     goal="__GOAL__",
     rankdir=TB,
     model_stylesheet="
-      * { llm_provider: anthropic; llm_model: claude-sonnet-4-6; }
-      #analyze { llm_model: claude-opus-4-6; }
+      * { llm_provider: google; llm_model: gemini-2.0-flash; }
+      #analyze { llm_model: gemini-2.5-pro-preview-05-06; }
     "
   ]
 

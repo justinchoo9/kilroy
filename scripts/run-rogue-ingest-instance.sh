@@ -52,29 +52,31 @@ kilroy attractor ingest \
   "$PROMPT" 2>&1 | tee -a "$OUTPUT_FILE"
 
 echo "" | tee -a "$OUTPUT_FILE"
-echo "=== Normalizing provider references (all -> anthropic) ===" | tee -a "$OUTPUT_FILE"
-# run-kilroy-compose.yaml only has the anthropic backend configured.
-# Replace ALL non-anthropic provider references so the generated DOT can run.
+echo "=== Normalizing provider references (all -> google) ===" | tee -a "$OUTPUT_FILE"
+# run-kilroy-compose.yaml uses google (Gemini) as the primary backend.
+# Replace ALL non-google provider references so the generated DOT can run.
 sed -i \
-  -e 's/llm_provider: openrouter/llm_provider: anthropic/g' \
-  -e 's/llm_provider="openrouter"/llm_provider="anthropic"/g' \
-  -e 's/llm_provider: openai/llm_provider: anthropic/g' \
-  -e 's/llm_provider="openai"/llm_provider="anthropic"/g' \
-  -e 's/llm_provider: google/llm_provider: anthropic/g' \
-  -e 's/llm_provider="google"/llm_provider="anthropic"/g' \
-  -e 's/llm_provider: cerebras/llm_provider: anthropic/g' \
-  -e 's/llm_provider="cerebras"/llm_provider="anthropic"/g' \
-  -e 's/llm_provider: kimi/llm_provider: anthropic/g' \
-  -e 's/llm_provider="kimi"/llm_provider="anthropic"/g' \
-  -e 's/llm_provider: minimax/llm_provider: anthropic/g' \
-  -e 's/llm_provider="minimax"/llm_provider="anthropic"/g' \
-  -e 's/llm_provider: zai/llm_provider: anthropic/g' \
-  -e 's/llm_provider="zai"/llm_provider="anthropic"/g' \
-  -e 's/llm_model: [a-z][a-z0-9_-]*\/[a-z][a-z0-9._-]*/llm_model: claude-sonnet-4-6/g' \
-  -e 's/llm_model="[a-z][a-z0-9_-]*\/[a-z][a-z0-9._-]*"/llm_model="claude-sonnet-4-6"/g' \
+  -e 's/llm_provider: openrouter/llm_provider: google/g' \
+  -e 's/llm_provider="openrouter"/llm_provider="google"/g' \
+  -e 's/llm_provider: openai/llm_provider: google/g' \
+  -e 's/llm_provider="openai"/llm_provider="google"/g' \
+  -e 's/llm_provider: anthropic/llm_provider: google/g' \
+  -e 's/llm_provider="anthropic"/llm_provider="google"/g' \
+  -e 's/llm_provider: cerebras/llm_provider: google/g' \
+  -e 's/llm_provider="cerebras"/llm_provider="google"/g' \
+  -e 's/llm_provider: kimi/llm_provider: google/g' \
+  -e 's/llm_provider="kimi"/llm_provider="google"/g' \
+  -e 's/llm_provider: minimax/llm_provider: google/g' \
+  -e 's/llm_provider="minimax"/llm_provider="google"/g' \
+  -e 's/llm_provider: zai/llm_provider: google/g' \
+  -e 's/llm_provider="zai"/llm_provider="google"/g' \
+  -e 's/llm_model: [a-zA-Z0-9_-]*\/[a-zA-Z0-9._-]*/llm_model: gemini-2.0-flash/g' \
+  -e 's/llm_model="[a-zA-Z0-9_-]*\/[a-zA-Z0-9._-]*"/llm_model="gemini-2.0-flash"/g' \
+  -e 's/llm_model: claude-[a-zA-Z0-9._-]*/llm_model: gemini-2.0-flash/g' \
+  -e 's/llm_model="claude-[a-zA-Z0-9._-]*"/llm_model="gemini-2.0-flash"/g' \
   "$GENERATED_DOT"
-REMAINING=$(grep -cE 'llm_provider[: ="]+[^a]' "$GENERATED_DOT" 2>/dev/null || echo "0")
-echo "Normalized: $(grep -c 'anthropic' "$GENERATED_DOT") anthropic refs, $REMAINING non-anthropic refs remaining" | tee -a "$OUTPUT_FILE"
+REMAINING=$(grep -cE 'llm_provider[: ="]+[^g]' "$GENERATED_DOT" 2>/dev/null || echo "0")
+echo "Normalized: $(grep -c 'google' "$GENERATED_DOT") google refs, $REMAINING non-google refs remaining" | tee -a "$OUTPUT_FILE"
 
 echo "" | tee -a "$OUTPUT_FILE"
 echo "=== Generated DOT ($GENERATED_DOT) ===" | tee -a "$OUTPUT_FILE"
