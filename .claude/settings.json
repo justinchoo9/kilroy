@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "skills/create-dotfile/hooks/validate-dot.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
