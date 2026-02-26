@@ -48,6 +48,7 @@ artifact_policy:
         CARGO_TARGET_DIR: "{managed_roots.tool_cache_root}/cargo-target"
         RUSTUP_HOME: "/Users/jonathan/.rustup"
         RUSTC: "/Users/jonathan/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc"
+        RUSTDOC: "/Users/jonathan/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustdoc"
   checkpoint:
     exclude_globs:
       - "**/.cargo-target*/**"
