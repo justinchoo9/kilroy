@@ -162,8 +162,6 @@ for i in $(seq 1 "$INGEST_RUNS"); do
     if [ "$VALIDATE_RC" -ne 0 ]; then
         echo "  FAIL: validator returned exit $VALIDATE_RC"
         cat "$VALIDATE_OUT" | sed 's/^/    /'
-        TOTAL_ERRORS=$(( TOTAL_ERRORS + 1 ))
-        if [ 1 -gt "$WORST_ERRORS" ]; then WORST_ERRORS=1; fi
         FAIL=1
     else
         echo "  validate: ok"
@@ -223,21 +221,31 @@ done
 echo "=== summary ==="
 echo "runs:                  $INGEST_RUNS"
 echo "worst_missing_status:  $WORST_MISSING (baseline threshold: $MAX_MISSING_STATUS)"
+echo "worst_validator_errors: $WORST_ERRORS (baseline threshold: $MAX_VALIDATOR_ERRORS)"
 echo "total_validator_errors: $TOTAL_ERRORS"
 
+if [ "$WORST_ERRORS" -gt "$MAX_VALIDATOR_ERRORS" ]; then
+    FAIL=1
+    echo "ERROR: validator errors ($WORST_ERRORS) exceed baseline threshold ($MAX_VALIDATOR_ERRORS)"
+fi
+
 if [ "$UPDATE_BASELINE" -eq 1 ]; then
-    # Write a new baseline based on observed worst-case + 0 tolerance for errors.
-    cat > "$BASELINE_FILE" <<BASELINE_EOF
+    if [ "$FAIL" -eq 1 ]; then
+        echo "WARNING: Not updating baseline because run detected regressions (FAIL=1). Fix regressions first, then run --update-baseline again."
+    else
+        # Write a new baseline based on observed worst-case + 0 tolerance for errors.
+        cat > "$BASELINE_FILE" <<BASELINE_EOF
 {
   "comment": "Update by running: RUN_INGEST_QUALITY=1 scripts/test-ingest-quality.sh --update-baseline",
   "max_missing_status_path_nodes": $WORST_MISSING,
   "max_validator_errors": $WORST_ERRORS
 }
 BASELINE_EOF
-    echo ""
-    echo "baseline updated: $BASELINE_FILE"
-    echo "  max_missing_status_path_nodes=$WORST_MISSING"
-    echo "  max_validator_errors=$WORST_ERRORS"
+        echo ""
+        echo "baseline updated: $BASELINE_FILE"
+        echo "  max_missing_status_path_nodes=$WORST_MISSING"
+        echo "  max_validator_errors=$WORST_ERRORS"
+    fi
 fi
 
 if [ "$FAIL" -ne 0 ]; then
