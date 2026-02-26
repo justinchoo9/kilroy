@@ -46,6 +46,7 @@ artifact_policy:
       rust:
         CARGO_HOME: "{managed_roots.tool_cache_root}/cargo-home"
         CARGO_TARGET_DIR: "{managed_roots.tool_cache_root}/cargo-target"
+        RUSTUP_HOME: "/Users/jonathan/.rustup"
   checkpoint:
     exclude_globs:
       - "**/.cargo-target*/**"
