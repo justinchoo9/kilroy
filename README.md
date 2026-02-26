@@ -24,19 +24,6 @@ brew install kilroy
 go install github.com/danshapiro/kilroy/cmd/kilroy@latest
 ```
 
-### Binary Download
-
-Download the latest release from [GitHub Releases](https://github.com/danshapiro/kilroy/releases).
-
-| Platform       | Archive                          |
-|----------------|----------------------------------|
-| macOS (Apple)  | `kilroy_*_darwin_arm64.tar.gz`   |
-| macOS (Intel)  | `kilroy_*_darwin_amd64.tar.gz`   |
-| Linux (x86_64) | `kilroy_*_linux_amd64.tar.gz`    |
-| Linux (ARM64)  | `kilroy_*_linux_arm64.tar.gz`    |
-| Windows        | `kilroy_*_windows_amd64.zip`     |
-| Windows (ARM)  | `kilroy_*_windows_arm64.zip`     |
-
 ### Build from Source
 
 ```bash
