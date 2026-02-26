@@ -55,3 +55,6 @@ echo "All validations passed"
 # To run extended fuzzing locally:
 #   go test -fuzz=FuzzParse       -fuzztime=30s ./internal/attractor/dot/
 #   go test -fuzz=FuzzConditionEval -fuzztime=30s ./internal/attractor/cond/
+
+# Optional quality regression check (requires kilroy binary and Claude API)
+# RUN_INGEST_QUALITY=1 ./scripts/test-ingest-quality.sh
