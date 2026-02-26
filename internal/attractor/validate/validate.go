@@ -312,8 +312,20 @@ func lintConditionSyntax(g *model.Graph) []Diagnostic {
 			})
 			continue
 		}
-		// Also ensure our evaluator can process it.
-		_, _ = cond.Evaluate(c, runtime.Outcome{Status: runtime.StatusSuccess}, runtime.NewContext())
+		// Also ensure our evaluator can process it. Discard the boolean result
+		// (we are linting with a synthetic outcome, so the match value is
+		// meaningless) but treat an error as a lint failure: it means the
+		// evaluator found something the syntax checker missed, which would
+		// cause a silent mis-route at runtime.
+		if _, evalErr := cond.Evaluate(c, runtime.Outcome{Status: runtime.StatusSuccess}, runtime.NewContext()); evalErr != nil {
+			diags = append(diags, Diagnostic{
+				Rule:     "condition_syntax",
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("condition evaluator rejected expression %q: %v", c, evalErr),
+				EdgeFrom: e.From,
+				EdgeTo:   e.To,
+			})
+		}
 	}
 	return diags
 }
