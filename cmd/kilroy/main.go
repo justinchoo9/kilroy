@@ -489,7 +489,11 @@ func attractorValidateBatch(files []string, jsonOutput bool) {
 	anyWarnings := false
 
 	for _, f := range files {
-		res := batchFileResult{File: f}
+		res := batchFileResult{
+			File:     f,
+			Errors:   []validate.Diagnostic{},
+			Warnings: []validate.Diagnostic{},
+		}
 		dotSource, err := os.ReadFile(f)
 		if err != nil {
 			res.ParseErr = err.Error()
