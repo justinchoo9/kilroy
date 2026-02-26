@@ -7,6 +7,7 @@ import (
 
 	"github.com/danshapiro/kilroy/internal/attractor/cond"
 	"github.com/danshapiro/kilroy/internal/attractor/model"
+	"github.com/danshapiro/kilroy/internal/attractor/modeldb"
 	"github.com/danshapiro/kilroy/internal/attractor/runtime"
 	"github.com/danshapiro/kilroy/internal/attractor/style"
 )
@@ -36,9 +37,23 @@ type LintRule interface {
 	Apply(g *model.Graph) []Diagnostic
 }
 
+// ValidateOptions carries optional parameters for ValidateWithOptions.
+type ValidateOptions struct {
+	// Catalog is the modeldb catalog used to validate llm_model values in the
+	// model_stylesheet against known model IDs. When nil, model ID catalog checks
+	// are skipped (the stylesheet_syntax check still runs).
+	Catalog *modeldb.Catalog
+}
+
 // Validate runs all built-in lint rules and any extra rules against the graph.
 // Extra rules are appended after built-in rules (spec §7.3).
 func Validate(g *model.Graph, extraRules ...LintRule) []Diagnostic {
+	return ValidateWithOptions(g, ValidateOptions{}, extraRules...)
+}
+
+// ValidateWithOptions runs all built-in lint rules plus catalog-aware checks
+// (when opts.Catalog is non-nil) and any extra rules against the graph.
+func ValidateWithOptions(g *model.Graph, opts ValidateOptions, extraRules ...LintRule) []Diagnostic {
 	var diags []Diagnostic
 	if g == nil {
 		return []Diagnostic{{Rule: "graph_nil", Severity: SeverityError, Message: "graph is nil"}}
@@ -52,6 +67,7 @@ func Validate(g *model.Graph, extraRules ...LintRule) []Diagnostic {
 	diags = append(diags, lintReachability(g)...)
 	diags = append(diags, lintConditionSyntax(g)...)
 	diags = append(diags, lintStylesheetSyntax(g)...)
+	diags = append(diags, lintStylesheetModelIDs(g, opts.Catalog)...)
 	diags = append(diags, lintRetryTargetsExist(g)...)
 	diags = append(diags, lintGoalGateHasRetry(g)...)
 	diags = append(diags, lintGoalGateExitStatusContract(g)...)
@@ -428,6 +444,72 @@ func lintStylesheetSyntax(g *model.Graph) []Diagnostic {
 		}}
 	}
 	return nil
+}
+
+// lintStylesheetModelIDs checks llm_model values in the model_stylesheet against
+// the modeldb catalog. When catalog is nil, the check is skipped silently.
+//
+// Diagnostics emitted:
+//   - stylesheet_unknown_model (WARNING): model ID is not found in the catalog for
+//     the declared provider.
+//   - stylesheet_noncanonical_model_id (WARNING): model ID is found only after
+//     normalizing dashes to dots in version numbers (Anthropic native format).
+//     The canonical catalog form (with dots) should be used instead.
+func lintStylesheetModelIDs(g *model.Graph, catalog *modeldb.Catalog) []Diagnostic {
+	if catalog == nil {
+		return nil
+	}
+	raw := strings.TrimSpace(g.Attrs["model_stylesheet"])
+	if raw == "" {
+		return nil
+	}
+	rules, err := style.ParseStylesheet(raw)
+	if err != nil {
+		// Syntax errors are already reported by lintStylesheetSyntax; skip here.
+		return nil
+	}
+
+	var diags []Diagnostic
+	// Track already-reported (provider, modelID) pairs to avoid duplicate warnings.
+	seen := map[string]bool{}
+	for _, r := range rules {
+		modelID, hasModel := r.Decls["llm_model"]
+		if !hasModel || strings.TrimSpace(modelID) == "" {
+			continue
+		}
+		modelID = strings.TrimSpace(modelID)
+		provider := strings.TrimSpace(r.Decls["llm_provider"])
+
+		key := provider + "|" + modelID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		if provider == "" {
+			// Without a provider we cannot do a targeted catalog lookup; skip.
+			continue
+		}
+
+		status := modeldb.LookupModelForProvider(catalog, provider, modelID)
+		switch status {
+		case modeldb.ModelNotFound:
+			diags = append(diags, Diagnostic{
+				Rule:     "stylesheet_unknown_model",
+				Severity: SeverityWarning,
+				Message:  fmt.Sprintf("model_stylesheet: model %q not found in catalog for provider %q", modelID, provider),
+			})
+		case modeldb.ModelFoundNonCanonical:
+			diags = append(diags, Diagnostic{
+				Rule:     "stylesheet_noncanonical_model_id",
+				Severity: SeverityWarning,
+				Message:  fmt.Sprintf("model_stylesheet: model %q uses non-canonical format (use dot-separated version numbers, e.g. replace dashes with dots in the version suffix)", modelID),
+			})
+		case modeldb.ModelFoundCanonical, modeldb.ModelProviderUnknown:
+			// No warning: canonical match or catalog has no data for this provider.
+		}
+	}
+	return diags
 }
 
 func lintRetryTargetsExist(g *model.Graph) []Diagnostic {
