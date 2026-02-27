@@ -32,6 +32,16 @@ Model defaults source:
 
 ## Workflow
 
+0. Fetch the current model list (required before writing any model_stylesheet).
+
+Run:
+    kilroy attractor modeldb suggest
+
+Capture the output. Use ONLY the model IDs listed in the output. Do not use
+model IDs from memory — they go stale. If the command is unavailable, default
+to: `claude-sonnet-4.6` (anthropic), `gemini-3-flash-preview` (google),
+`gpt-4.1` (openai).
+
 1. Determine mode and hard constraints.
 - If non-interactive/programmatic, do not ask follow-up questions.
 - Extract explicit constraints (`no fanout`, model/provider requirements, deliverable paths).

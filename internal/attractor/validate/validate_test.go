@@ -685,14 +685,14 @@ digraph G {
 	}
 }
 
-// TestLintConditionSyntax_EvaluatorErrorCaptured verifies that the G2 fix is
-// in place: the function signature of lintConditionSyntax now captures
-// (rather than discards) the evaluator's error return.  We test this
-// indirectly by confirming that the existing invalid-operator condition
-// (outcome>success) still produces a condition_syntax ERROR, and that a valid
-// condition (outcome=success) does not — ensuring we have not regressed the
-// existing detection path while adding the new capture.
-func TestLintConditionSyntax_EvaluatorCapture_NoRegressionOnKnownInvalid(t *testing.T) {
+// TestLintConditionSyntax_SyntaxRejectsGreaterThanOperator verifies that
+// "outcome>success" produces a condition_syntax ERROR. Note: cond.Evaluate
+// is never reached for inputs that fail validateConditionSyntax, so this
+// test exercises only the syntax-checker path. The Evaluate error paths in
+// evalClause are unreachable for inputs that pass syntax check (SplitN with
+// a known operator always returns exactly 2 parts); the guard remains as a
+// forward-compatibility safety net.
+func TestLintConditionSyntax_SyntaxRejectsGreaterThanOperator(t *testing.T) {
 	// Invalid condition: uses ">" which validateConditionSyntax rejects.
 	g, err := dot.Parse([]byte(`
 digraph G {
@@ -1453,4 +1453,156 @@ func TestPromptFile_LlmPromptConflict_FiresWithLlmPromptAttr(t *testing.T) {
 		}
 	}
 	t.Fatalf("expected prompt_file_conflict for node 'a'; got %+v", diags)
+}
+
+// --- Tests for all_conditional_edges lint rule ---
+
+func TestValidate_AllConditionalEdges_ErrorWhenAllConditional(t *testing.T) {
+	g, err := dot.Parse([]byte(`
+digraph G {
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="x"]
+  start -> a
+  a -> exit [condition="outcome=success"]
+  a -> exit [condition="outcome=fail"]
+}
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	diags := lintAllConditionalEdges(g)
+	assertHasRule(t, diags, "all_conditional_edges", SeverityError)
+}
+
+func TestValidate_AllConditionalEdges_PassesWithUnconditionalFallback(t *testing.T) {
+	g, err := dot.Parse([]byte(`
+digraph G {
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  a [shape=box, llm_provider=openai, llm_model=gpt-5.2, prompt="x"]
+  start -> a
+  a -> exit [condition="outcome=success"]
+  a -> exit [condition="outcome=fail"]
+  a -> exit
+}
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	diags := lintAllConditionalEdges(g)
+	assertNoRule(t, diags, "all_conditional_edges")
+}
+
+// --- Tests for goal_gate_has_retry lint rule ---
+
+func TestValidate_GoalGateHasRetry_WarnWhenNoTargetAnywhere(t *testing.T) {
+	g, err := dot.Parse([]byte(`
+digraph G {
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  review_consensus [shape=box, llm_provider=anthropic, llm_model="claude-sonnet-4.6", goal_gate=true, prompt="x"]
+  start -> review_consensus -> exit
+}
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	diags := lintGoalGateHasRetry(g)
+	assertHasRule(t, diags, "goal_gate_has_retry", SeverityWarning)
+}
+
+func TestValidate_GoalGateHasRetry_PassesWithGraphLevelTarget(t *testing.T) {
+	g, err := dot.Parse([]byte(`
+digraph G {
+  graph [retry_target="implement"]
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  review_consensus [shape=box, llm_provider=anthropic, llm_model="claude-sonnet-4.6", goal_gate=true, prompt="x"]
+  start -> review_consensus -> exit
+}
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	diags := lintGoalGateHasRetry(g)
+	assertNoRule(t, diags, "goal_gate_has_retry")
+}
+
+// --- Tests for goal_gate_missing_node_retry_target lint rule ---
+
+func TestValidate_GoalGateMissingNodeRetry_WarnWhenOnlyGraphLevel(t *testing.T) {
+	g, err := dot.Parse([]byte(`
+digraph G {
+  graph [retry_target="implement"]
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  review_consensus [shape=box, llm_provider=anthropic, llm_model="claude-sonnet-4.6", goal_gate=true, prompt="x"]
+  start -> review_consensus -> exit
+}
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	diags := lintGoalGateMissingNodeRetryTarget(g)
+	assertHasRule(t, diags, "goal_gate_missing_node_retry_target", SeverityWarning)
+}
+
+func TestValidate_GoalGateMissingNodeRetry_PassesWithNodeLevel(t *testing.T) {
+	g, err := dot.Parse([]byte(`
+digraph G {
+  graph [retry_target="implement"]
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  review_consensus [shape=box, llm_provider=anthropic, llm_model="claude-sonnet-4.6", goal_gate=true, retry_target="postmortem", prompt="x"]
+  start -> review_consensus -> exit
+}
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	diags := lintGoalGateMissingNodeRetryTarget(g)
+	assertNoRule(t, diags, "goal_gate_missing_node_retry_target")
+}
+
+// --- Tests for reserved_keyword_node_id lint rule ---
+
+func TestValidate_ReservedKeywordNodeID_WarnsOnIfKeyword(t *testing.T) {
+	// Build graph programmatically because DOT parser treats "if" as a keyword.
+	g := model.NewGraph("G")
+	n := model.NewNode("if")
+	n.Attrs["shape"] = "box"
+	n.Attrs["llm_provider"] = "openai"
+	n.Attrs["llm_model"] = "gpt-5.2"
+	_ = g.AddNode(n)
+
+	diags := lintReservedKeywordNodeID(g)
+	assertHasRule(t, diags, "reserved_keyword_node_id", SeverityWarning)
+}
+
+func TestValidate_ReservedKeywordNodeID_WarnsOnAllKeywords(t *testing.T) {
+	keywords := []string{"graph", "digraph", "subgraph", "node", "edge", "strict", "if"}
+	for _, kw := range keywords {
+		t.Run(kw, func(t *testing.T) {
+			g := model.NewGraph("G")
+			n := model.NewNode(kw)
+			n.Attrs["shape"] = "box"
+			_ = g.AddNode(n)
+
+			diags := lintReservedKeywordNodeID(g)
+			assertHasRule(t, diags, "reserved_keyword_node_id", SeverityWarning)
+		})
+	}
+}
+
+func TestValidate_ReservedKeywordNodeID_PassesOnNormalID(t *testing.T) {
+	g := model.NewGraph("G")
+	n := model.NewNode("check_toolchain")
+	n.Attrs["shape"] = "box"
+	n.Attrs["llm_provider"] = "openai"
+	n.Attrs["llm_model"] = "gpt-5.2"
+	_ = g.AddNode(n)
+
+	diags := lintReservedKeywordNodeID(g)
+	assertNoRule(t, diags, "reserved_keyword_node_id")
 }

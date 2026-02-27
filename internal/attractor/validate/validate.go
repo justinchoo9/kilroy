@@ -333,6 +333,11 @@ func lintConditionSyntax(g *model.Graph) []Diagnostic {
 			})
 			continue
 		}
+		// NOTE: evalClause error paths are unreachable for inputs that pass
+		// validateConditionSyntax above: SplitN(s, op, 2) on a string that
+		// contains op always yields exactly 2 parts. The Evaluate call below
+		// is retained as a forward-compatibility safety net.
+		//
 		// Also ensure our evaluator can process it. Discard the boolean result
 		// (we are linting with a synthetic outcome, so the match value is
 		// meaningless) but treat an error as a lint failure: it means the
@@ -773,14 +778,10 @@ func lintPromptOnCodergenNodes(g *model.Graph) []Diagnostic {
 	return diags
 }
 
-// lintStatusContractInPrompt warns when a codergen (shape=box) node has a
-// non-empty prompt that does not reference KILROY_STAGE_STATUS_PATH or
-// KILROY_STAGE_STATUS_FALLBACK_PATH.  Without the contract the node cannot
-// write status.json and the engine silently falls back to exit-code-only
-// interpretation, losing all custom outcome routing (Gap F).
-//
-// The rule is silent when the prompt is empty — the existing
-// prompt_on_llm_nodes rule already handles that case.
+// lintStatusContractInPrompt checks that shape=box nodes reference
+// $KILROY_STAGE_STATUS_PATH in their prompt text.
+// NOTE: This rule only checks shape=box nodes. Future codergen shapes
+// that write status.json should be added here.
 func lintStatusContractInPrompt(g *model.Graph) []Diagnostic {
 	var diags []Diagnostic
 	for id, n := range g.Nodes {
