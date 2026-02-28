@@ -290,6 +290,27 @@ digraph G {
 	}
 }
 
+func TestRestartFailureSignature_CommaSpacingNormalized(t *testing.T) {
+	// Failure reasons that list comma-separated AC IDs are emitted with
+	// inconsistent spacing ("ac4, ac6, ac11" vs "ac4,ac6,ac11") depending on
+	// how the checker formats its output. Both forms must produce the same
+	// signature so the cycle breaker accumulates correctly.
+	cases := []struct{ a, b string }{
+		{"ACs failed: AC4, AC6, AC11, AC12", "ACs failed: AC4,AC6,AC11,AC12"},
+		{"acs failed: ac4, ac6", "acs failed: ac4,ac6"},
+		{"err: foo,  bar,   baz", "err: foo,bar,baz"},
+	}
+	for _, tc := range cases {
+		outA := runtime.Outcome{Status: runtime.StatusFail, FailureReason: tc.a}
+		outB := runtime.Outcome{Status: runtime.StatusFail, FailureReason: tc.b}
+		sigA := restartFailureSignature("verify_fidelity", outA, failureClassDeterministic)
+		sigB := restartFailureSignature("verify_fidelity", outB, failureClassDeterministic)
+		if sigA != sigB {
+			t.Errorf("signatures differ for %q vs %q: %q != %q", tc.a, tc.b, sigA, sigB)
+		}
+	}
+}
+
 func TestRestartFailureSignature_UsesFailureSignatureHint(t *testing.T) {
 	outA := runtime.Outcome{
 		Status:        runtime.StatusFail,

@@ -22,9 +22,10 @@ const (
 )
 
 var (
-	failureSignatureWhitespaceRE = regexp.MustCompile(`\s+`)
-	failureSignatureHexRE        = regexp.MustCompile(`\b[0-9a-f]{7,64}\b`)
-	failureSignatureDigitsRE     = regexp.MustCompile(`\b\d+\b`)
+	failureSignatureWhitespaceRE  = regexp.MustCompile(`\s+`)
+	failureSignatureHexRE         = regexp.MustCompile(`\b[0-9a-f]{7,64}\b`)
+	failureSignatureDigitsRE      = regexp.MustCompile(`\b\d+\b`)
+	failureSignatureCommaSpaceRE  = regexp.MustCompile(`,\s+`)
 	transientInfraReasonHints    = []string{
 		"timeout",
 		"timed out",
@@ -256,6 +257,7 @@ func normalizeFailureReason(reason string) string {
 	}
 	reason = failureSignatureHexRE.ReplaceAllString(reason, "<hex>")
 	reason = failureSignatureDigitsRE.ReplaceAllString(reason, "<n>")
+	reason = failureSignatureCommaSpaceRE.ReplaceAllString(reason, ",")
 	reason = failureSignatureWhitespaceRE.ReplaceAllString(reason, " ")
 	reason = strings.TrimSpace(reason)
 	if len(reason) > 240 {

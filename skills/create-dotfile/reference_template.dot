@@ -6,6 +6,7 @@ digraph reference_template {
         retry_target="implement",
         fallback_retry_target="debate_consolidate",
         provenance_version="1",
+        loop_restart_persist_keys="last_failing_acs",
         model_stylesheet="
             * { llm_model: DEFAULT_MODEL; llm_provider: DEFAULT_PROVIDER; }
             .hard { llm_model: HARD_MODEL; llm_provider: HARD_PROVIDER; }
@@ -178,6 +179,9 @@ digraph reference_template {
         //     from the ingestor's reading of the spec and DoD
         //   - Incremental implementation: each module complete before next
         //   - Log progress to .ai/implementation_log.md
+        //   - PRE-EXIT VERIFICATION (repair passes): if .ai/postmortem_latest.md
+        //     exists, run sh scripts/validate-build.sh and re-read each targeted
+        //     file before exiting; do NOT exit silently on a repair pass
         // Failure: also include failure_signature in meta
         implement [
             shape=box,
@@ -293,11 +297,19 @@ digraph reference_template {
         //   - Output: root causes, what worked (preserve), what failed
         //     (fix), concrete next changes
         //   - Must NOT direct from-scratch restart — preserve working code
+        // Progress detection (required):
+        //   - Extract current failing AC IDs from verify_fidelity.md / review outputs
+        //   - Read context key last_failing_acs (written by previous postmortem iteration)
+        //   - If failing AC set is IDENTICAL to last_failing_acs → route needs_replan
+        //     (zero progress; another impl_repair will not help)
+        //   - If failing AC set is smaller/different or this is first failure → impl_repair
+        //   - Include context_updates in every status write:
+        //     {"context_updates":{"last_failing_acs":"AC4,AC6"}} (sorted, comma-separated)
         // Outcome classification (recovery routing):
         //   - impl_repair: code repair needed; plan/toolchain still valid
-        //   - needs_replan: plan/approach is inadequate; regenerate plan branches
+        //   - needs_replan: plan/approach is inadequate; OR zero progress detected
         //   - needs_toolchain: environment/bootstrap/toolchain issue detected
-        //   - When uncertain, default to impl_repair
+        //   - When uncertain on first failure, default to impl_repair
         // Writes: .ai/postmortem_latest.md (overwrite previous)
         // Note: status reflects analysis completion, not implementation state
         postmortem [auto_status=true]

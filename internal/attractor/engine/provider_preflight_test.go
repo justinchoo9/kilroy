@@ -91,6 +91,7 @@ func TestRunProviderCapabilityProbe_RespectsParentContextCancel(t *testing.T) {
 
 func TestRunWithConfig_WarnsWhenCLIModelNotInCatalogForProvider(t *testing.T) {
 	t.Setenv("KILROY_PREFLIGHT_PROMPT_PROBES", "off")
+	t.Setenv("GEMINI_API_KEY", "k-test")
 	repo := initTestRepo(t)
 	catalog := writeCatalogForPreflight(t, `{
   "data": [
@@ -123,6 +124,7 @@ func TestRunWithConfig_WarnsWhenCLIModelNotInCatalogForProvider(t *testing.T) {
 }
 
 func TestRunWithConfig_WarnsWhenAPIModelNotInCatalogForProvider(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "k-test")
 	repo := initTestRepo(t)
 	catalog := writeCatalogForPreflight(t, `{
   "data": [
@@ -201,6 +203,7 @@ func TestRunWithConfig_WarnsAndContinues_WhenProviderNotInCatalog(t *testing.T) 
 
 func TestRunWithConfig_ForceModel_BypassesCatalogGate(t *testing.T) {
 	t.Setenv("KILROY_PREFLIGHT_PROMPT_PROBES", "off")
+	t.Setenv("OPENAI_API_KEY", "k-test")
 
 	repo := initTestRepo(t)
 	catalog := writeCatalogForPreflight(t, `{
