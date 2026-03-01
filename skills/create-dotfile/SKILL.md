@@ -140,7 +140,8 @@ Required properties: (1) idempotent — skip existing files; (2) modulo item ass
    ONLY on failure: {"status":"fail","failure_reason":"...","failure_class":"..."}"
   ```
   Omitting the paths from auto_status node prompts causes `status_contract_in_prompt` warnings.
-- Require explicit success/fail/retry behavior. For fail/retry include `failure_reason` and `details` (and `failure_class` where applicable).
+- Require explicit success/fail/retry behavior. For fail/retry, `failure_reason` and `failure_class` are **required** — not optional. Missing `failure_class` defaults to `deterministic`, which is tracked by the cycle breaker. Silently omitting it makes the breaker behavior unpredictable.
+- For any node whose failure prose may vary between retries (filenames, line numbers, counts, AC lists), also set `failure_signature` to a stable short key: `"failure_signature":"compile_errors"`. This prevents the same root cause from appearing as distinct signatures and defeating the cycle breaker. See **Cycle Detection Contract** section below.
 - Keep `.ai/*` producer/consumer paths exact; no filename drift.
 - **`max_tokens` (output token cap, default 32768):** Every provider adapter defaults to 32768 output
   tokens per response. This is a *per-response generation cap* — completely separate from the model's
@@ -176,6 +177,51 @@ Required properties: (1) idempotent — skip existing files; (2) modulo item ass
 - **Postmortem progress detection (required):** The `postmortem` prompt MUST compare the current failing AC set against the previous iteration's failing AC set (stored in context key `last_failing_acs`). If the sets are identical — zero progress — the postmortem MUST route `needs_replan`, not `impl_repair`. The default `impl_repair` applies ONLY on the first occurrence of a failure. Identical repeated failures are a signal that the implementation approach is wrong, not that another repair pass will help. Add `loop_restart_persist_keys="last_failing_acs"` to the graph attrs so this key survives loop restarts.
 - **Implement pre-exit verification (required on repair passes):** The `implement` prompt MUST require that on any repair pass (when `.ai/postmortem_latest.md` or `.ai/review_consensus.md` exists), the node runs `./scripts/validate-build.sh` and re-reads each targeted file to confirm the fix is present before exiting. Silent exit (auto-success) on a repair pass without self-verification is the primary cause of no-progress cycles.
 
+## Cycle Detection Contract (Required)
+
+The engine tracks a `map[signature]int` where **signature = `nodeID|failureClass|normalizedReason`**. When the same (node, class, reason) tuple appears `loop_restart_signature_limit` times (default 3), the run aborts with "deterministic failure cycle detected." Understanding this mechanism is required to design pipelines that terminate correctly without false-positive aborts.
+
+**What counts toward the limit:**
+- Only `status=fail` or `status=retry` outcomes enter the tracker. Custom non-fail statuses (`more_work`, `impl_repair`, `needs_revision`, etc.) do **not** — see the non-fail loop hole below.
+- Only `failure_class=deterministic` and `failure_class=structural` are tracked. `transient_infra` is excluded (it routes through the `loop_restart` circuit breaker instead). Any unrecognized or missing `failure_class` defaults to `deterministic` and is tracked.
+- **Signatures never reset on success.** If `implement` succeeds 10 times but `verify_build` fails with the same signature 5 times across those cycles, the breaker fires on the 5th hit. Routing through postmortem does not reset the map either — postmortem's own outcome is non-fail (`impl_repair` etc.) and is invisible to the tracker.
+
+**The `failure_signature` field stabilizes the reason component:**
+By default, `failure_reason` is normalized (lowercase, hex→`<hex>`, digits→`<n>`, comma-spaces collapsed) to form the reason component of the signature. For any node that emits variable failure prose, set an explicit stable key:
+```json
+{
+  "status": "fail",
+  "failure_reason": "cargo build returned 47 errors in src/lib.rs line 203...",
+  "failure_signature": "compile_errors",
+  "failure_class": "deterministic_agent_bug"
+}
+```
+The `failure_signature` value replaces `failure_reason` as the reason component. This collapses all "compile error" variants into one counter regardless of error count, line numbers, or message wording.
+
+Set `failure_signature` on:
+- All verify/check nodes whose failure enumerates file paths, AC IDs, or counts.
+- Merge/synthesis nodes whose failure lists missing files (use `"missing_files"` or `"missing_design_docs"`).
+- Any node where the same root cause may appear with varying wording across retries.
+- Any node where you want to intentionally distinguish two different failure modes: use separate stable keys like `"compile_errors"` vs `"missing_wasm_exports"`.
+
+**The non-fail `loop_restart` hole:**
+`loop_restart=true` edges carrying a custom non-fail status (e.g. `outcome=more_work`) bypass the engine's signature cycle breaker entirely. The only protections are the LLM-side pass counter and `max_restarts` (default 50). For every non-fail `loop_restart` cycle, the prompting node MUST:
+1. Maintain a pass counter in a scratch file (e.g. `.ai/work_pass.txt`)
+2. Increment it on each execution
+3. Emit `status=fail, failure_class=deterministic_agent_bug` when the counter exceeds N (recommended: 5–10)
+
+This converts the stall into a `fail` that the signature cycle breaker can then accumulate and trip on. This is the only engine-enforced backstop for `more_work`-style loops.
+
+**Setting `loop_restart_signature_limit`:**
+The default is 3. For pipelines with a multi-pass repair loop (implement → verify → postmortem → implement), 3 may abort legitimate repair attempts. Recommended values:
+- Simple linear pipelines: default (3)
+- Pipelines with 1–2 repair passes expected: 4–5
+- Pipelines with postmortem → plan_work → implement repair cycles: 5
+- Always set explicitly in graph attrs so the intent is visible:
+  ```
+  graph [loop_restart_signature_limit=5, loop_restart_persist_keys="last_failing_acs", ...]
+  ```
+
 7. Preserve authoritative text contracts.
 - If user explicitly provides goal/spec/DoD text, keep it verbatim (DOT-escape only).
 - `expand_spec` must include the full user input verbatim in a delimited block.
@@ -198,7 +244,7 @@ Required properties: (1) idempotent — skip existing files; (2) modulo item ass
 - `shape=diamond` nodes route outcomes only; do not attach execution prompts.
 - Keep prerequisite/tool gates real: route success/failure explicitly.
 - Add deterministic checks for explicit deliverable paths named in requirements.
-- For semantic verify stages, include a content-addressable `failure_signature` when failing repeated acceptance checks.
+- Include a stable `failure_signature` on any node whose `failure_reason` may vary between retries — not just verify stages. Merge nodes listing missing files, plan nodes, analysis nodes, and any node whose error prose contains counts or filenames all need a stable key. See **Cycle Detection Contract** for the full guidance.
 - **Never** instruct any `shape=box` node to write `status: retry`. It is reserved by the attractor and triggers `deterministic_failure_cycle_check`, which downgrades to `fail` after N attempts. For iteration/revision loops, use a custom outcome: e.g. `{"status": "needs_revision"}` routed via `condition="outcome=needs_revision"` edge.
 - **Never** instruct `review_consensus` (or any review/gate node) to write `status: fail` for a rejection verdict. Write a custom outcome instead: e.g. `{"status": "rejected"}`. `status: fail` triggers failure processing and blocks `goal_gate=true` re-execution. Route rejection via `condition="outcome=rejected"`.
 - **Never** write `{"status":"success","outcome":"..."}` in a status JSON — the `outcome` key is silently ignored by the runtime decoder; only `status` drives edge condition matching. Custom routing always uses the `status` field: `{"status":"more_work"}` matches `condition="outcome=more_work"`, not `{"status":"success","outcome":"more_work"}`.
