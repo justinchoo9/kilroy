@@ -448,6 +448,10 @@ func (h *ParallelHandler) runBranch(ctx context.Context, exec *Execution, parall
 			Outcome:     runtime.Outcome{Status: runtime.StatusFail, FailureReason: err.Error()},
 		}
 	}
+	// Input materialization copies files from the parent worktree into the branch
+	// worktree, which may overwrite the .git file with the parent's slot reference.
+	// Repair the .git file so git operations in this branch use the correct slot.
+	_ = gitutil.RepairWorktree(exec.Engine.Options.RepoPath, worktreeDir)
 	if branchEng.CXDB != nil {
 		if _, err := os.Stat(inputRunManifestPath(branchRoot)); err == nil {
 			_, _ = branchEng.CXDB.PutArtifactFile(ctx, "", inputManifestFileName, inputRunManifestPath(branchRoot))
