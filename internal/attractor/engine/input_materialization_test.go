@@ -236,6 +236,46 @@ func TestInputMaterialization_SelfCopyPreservesWorktreeFiles(t *testing.T) {
 	}
 }
 
+// TestInputMaterialization_GitDirSkippedWhenCopyingToWorktree verifies that
+// files under .git/ in the source repo are never materialized into the worktree
+// target. A git worktree has .git as a plain *file* (the worktree pointer), so
+// any attempt to MkdirAll({target}/.git) would fail with "not a directory".
+func TestInputMaterialization_GitDirSkippedWhenCopyingToWorktree(t *testing.T) {
+	source := t.TempDir()
+	target := t.TempDir()
+
+	// Simulate a git repo: .git/ is a directory with real files inside.
+	mustWriteInputFile(t, filepath.Join(source, ".git", "config"), "[core]\n\trepositoryformatversion = 0\n")
+	mustWriteInputFile(t, filepath.Join(source, ".git", "HEAD"), "ref: refs/heads/main\n")
+	mustWriteInputFile(t, filepath.Join(source, "spec.md"), "project spec\n")
+
+	// Simulate a worktree target: .git is a plain file (the worktree pointer).
+	if err := os.WriteFile(filepath.Join(target, ".git"), []byte("gitdir: /some/repo/.git/worktrees/wt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := materializeInputClosure(context.Background(), InputMaterializationOptions{
+		SourceRoots:      []string{source},
+		Include:          []string{"**"},
+		FollowReferences: false,
+		TargetRoot:       target,
+	})
+	if err != nil {
+		t.Fatalf("materializeInputClosure: %v", err)
+	}
+
+	// spec.md should be copied; .git/* should be skipped entirely.
+	assertExists(t, filepath.Join(target, "spec.md"))
+	// .git must remain a plain file, not become a directory.
+	info, err := os.Lstat(filepath.Join(target, ".git"))
+	if err != nil {
+		t.Fatalf("stat target/.git: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("target/.git should remain a regular file, got mode %v", info.Mode())
+	}
+}
+
 func mustWriteInputFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

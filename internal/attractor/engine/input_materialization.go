@@ -170,6 +170,11 @@ func materializeInputClosure(ctx context.Context, opts InputMaterializationOptio
 		if !isRegularFile(current) {
 			continue
 		}
+		// Skip VCS metadata paths (e.g. .git/**) so we never try to mkdir a
+		// path that collides with the worktree .git pointer file.
+		if isVCSMetaPath(current) {
+			continue
+		}
 		resolved[current] = true
 		reason := queueReasons[current]
 		if !opts.FollowReferences || !shouldScanInputReferences(current, reason) {
@@ -693,6 +698,19 @@ func isReferenceDocumentPath(path string) bool {
 	default:
 		return false
 	}
+}
+
+// isVCSMetaPath reports whether path contains a VCS metadata directory segment
+// (.git or .jj). Such files must never be copied into a worktree because the
+// worktree already has a .git pointer *file* and MkdirAll would conflict with it.
+func isVCSMetaPath(path string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(filepath.Clean(path), "\\", "/"))
+	for _, seg := range strings.Split(normalized, "/") {
+		if seg == ".git" || seg == ".jj" {
+			return true
+		}
+	}
+	return false
 }
 
 func isLikelyArtifactInputPath(path string) bool {
