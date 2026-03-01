@@ -22,10 +22,10 @@ const (
 )
 
 var (
-	failureSignatureWhitespaceRE  = regexp.MustCompile(`\s+`)
-	failureSignatureHexRE         = regexp.MustCompile(`\b[0-9a-f]{7,64}\b`)
-	failureSignatureDigitsRE      = regexp.MustCompile(`\b\d+\b`)
-	failureSignatureCommaSpaceRE  = regexp.MustCompile(`,\s+`)
+	failureSignatureWhitespaceRE = regexp.MustCompile(`\s+`)
+	failureSignatureHexRE        = regexp.MustCompile(`\b[0-9a-f]{7,64}\b`)
+	failureSignatureDigitsRE     = regexp.MustCompile(`\b\d+\b`)
+	failureSignatureCommaSpaceRE = regexp.MustCompile(`,\s+`)
 	transientInfraReasonHints    = []string{
 		"timeout",
 		"timed out",

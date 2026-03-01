@@ -25,9 +25,9 @@ func TestClassifyFailureClass_AllHeuristicPatterns(t *testing.T) {
 	// Each entry: an FailureReason string that should trigger a specific class.
 	// No explicit failure_class hint is set, so the heuristic path is exercised.
 	cases := []struct {
-		name         string
+		name          string
 		failureReason string
-		want         string
+		want          string
 	}{
 		// ── transient_infra ─────────────────────────────────────────────────────
 		{name: "transient: timeout", failureReason: "request timeout after 30s", want: failureClassTransientInfra},
@@ -117,9 +117,9 @@ func TestClassifyFailureClass_AllHeuristicPatterns(t *testing.T) {
 // pattern matching applies to StatusRetry outcomes as well as StatusFail.
 func TestClassifyFailureClass_RetryStatusUsesHeuristics(t *testing.T) {
 	cases := []struct {
-		name         string
+		name          string
 		failureReason string
-		want         string
+		want          string
 	}{
 		{name: "retry + timeout -> transient", failureReason: "timeout", want: failureClassTransientInfra},
 		{name: "retry + turn limit -> budget", failureReason: "turn limit reached", want: failureClassBudgetExhausted},

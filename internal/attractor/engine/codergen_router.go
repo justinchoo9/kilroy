@@ -26,7 +26,6 @@ import (
 	"github.com/danshapiro/kilroy/internal/modelmeta"
 )
 
-
 type CodergenRouter struct {
 	cfg     *RunConfigFile
 	catalog *modeldb.Catalog

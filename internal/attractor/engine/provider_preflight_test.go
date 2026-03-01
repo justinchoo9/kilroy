@@ -1916,9 +1916,9 @@ func TestUsedAPIProviders_ExcludesUncredentialedFailoverTarget(t *testing.T) {
 
 	runtimes := map[string]ProviderRuntime{
 		"anthropic": {
-			Key:     "anthropic",
-			Backend: BackendAPI,
-			API:     providerspec.APISpec{DefaultAPIKeyEnv: "ANTHROPIC_API_KEY"},
+			Key:      "anthropic",
+			Backend:  BackendAPI,
+			API:      providerspec.APISpec{DefaultAPIKeyEnv: "ANTHROPIC_API_KEY"},
 			Failover: []string{"google"},
 		},
 		"google": {

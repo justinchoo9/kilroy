@@ -525,10 +525,10 @@ func attractorValidate(args []string) {
 
 // batchFileResult holds per-file validate results for batch mode.
 type batchFileResult struct {
-	File     string               `json:"file"`
+	File     string                `json:"file"`
 	Errors   []validate.Diagnostic `json:"errors"`
 	Warnings []validate.Diagnostic `json:"warnings"`
-	ParseErr string               `json:"parse_error,omitempty"`
+	ParseErr string                `json:"parse_error,omitempty"`
 }
 
 // attractorValidateBatch runs validate against each file in files and emits a
