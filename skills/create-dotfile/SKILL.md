@@ -142,6 +142,18 @@ Required properties: (1) idempotent — skip existing files; (2) modulo item ass
   Omitting the paths from auto_status node prompts causes `status_contract_in_prompt` warnings.
 - Require explicit success/fail/retry behavior. For fail/retry include `failure_reason` and `details` (and `failure_class` where applicable).
 - Keep `.ai/*` producer/consumer paths exact; no filename drift.
+- **`max_tokens` (output token cap, default 32768):** Every provider adapter defaults to 32768 output
+  tokens per response. This is a *per-response generation cap* — completely separate from the model's
+  input context window. For nodes that write large files (full source modules, long docs), leave this
+  at the default or increase it. For classification-only or short-answer nodes, reducing it is fine.
+  Set it explicitly when you want deterministic behavior regardless of provider defaults:
+  ```dot
+  implement [shape=box, max_agent_turns=300, max_tokens=32768, prompt="..."]
+  ```
+  **Failing to account for `max_tokens`** on code-generating nodes is the most common silent failure
+  mode: the model generates a large write_file call, hits the cap, Gemini/Anthropic return an empty
+  or truncated response, and Kilroy interprets the session as cleanly ended (`auto_status=true`
+  writes `{"status":"success"}`), producing an infinite do-nothing loop.
 - `shape=parallelogram` nodes must use `tool_command`.
 - For compiled or packaged deliverables (executables, libraries, modules, services, containers, bundles): the verification node MUST validate the expected runtime behavior or interface contract — not just file existence or a successful build exit code.
 - Add a domain-specific runtime validation node when needed (for example `verify_runtime`, `verify_api_contract`, `verify_cli_behavior`, `verify_ui_smoke`). Use checks that prove the deliverable actually works for the intended use case.

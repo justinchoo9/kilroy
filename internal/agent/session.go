@@ -477,7 +477,7 @@ func (s *Session) processOneInput(ctx context.Context, input string) (string, er
 			v := strings.TrimSpace(s.cfg.ReasoningEffort)
 			req.ReasoningEffort = &v
 		}
-		if s.cfg.MaxTokens != nil {
+		if s.cfg.MaxTokens != nil && *s.cfg.MaxTokens > 0 {
 			req.MaxTokens = s.cfg.MaxTokens
 		}
 		if len(s.cfg.ProviderOptions) > 0 {

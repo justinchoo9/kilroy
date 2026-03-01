@@ -440,6 +440,12 @@ func copyInputFile(source string, target string) error {
 	if err != nil {
 		return err
 	}
+	// Guard against self-copy: if target already exists and refers to the same
+	// inode as source, opening with O_TRUNC would destroy the source content
+	// before any bytes are read. Skip the copy — the file is already in place.
+	if dstInfo, err := os.Stat(target); err == nil && os.SameFile(info, dstInfo) {
+		return nil
+	}
 	dst, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
 	if err != nil {
 		return err

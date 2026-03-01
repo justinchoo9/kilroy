@@ -94,6 +94,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 	autoCache := anthropicAutoCacheEnabled(a.Name(), req.ProviderOptions)
 
+
 	maxTokens := 65536
 	if req.MaxTokens != nil && *req.MaxTokens > 0 {
 		maxTokens = *req.MaxTokens
@@ -266,6 +267,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		return nil, err
 	}
 	autoCache := anthropicAutoCacheEnabled(a.Name(), req.ProviderOptions)
+
 
 	maxTokens := 65536
 	if req.MaxTokens != nil && *req.MaxTokens > 0 {

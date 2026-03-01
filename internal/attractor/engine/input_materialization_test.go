@@ -188,6 +188,54 @@ func TestInputMaterialization_ExplicitIncludeTraversesArtifactDocs(t *testing.T)
 	assertExists(t, filepath.Join(target, "docs", "required.md"))
 }
 
+// TestCopyInputFile_SelfCopyPreservesContent verifies that copyInputFile does not
+// truncate a file when source and target resolve to the same inode (the
+// "worktree-as-both-source-and-target" case in materializeStageInputs).
+func TestCopyInputFile_SelfCopyPreservesContent(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "spec.md")
+	content := "important content\n"
+	if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyInputFile(file, file); err != nil {
+		t.Fatalf("copyInputFile self-copy returned error: %v", err)
+	}
+	got, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Fatalf("self-copy truncated file: got %d bytes, want %d", len(got), len(content))
+	}
+}
+
+// TestInputMaterialization_SelfCopyPreservesWorktreeFiles verifies that when
+// sourceRoots and targetRoot both point to the same directory (as in
+// materializeStageInputs), files already in the worktree are not truncated.
+func TestInputMaterialization_SelfCopyPreservesWorktreeFiles(t *testing.T) {
+	worktree := t.TempDir()
+	content := "design doc content\n"
+	mustWriteInputFile(t, filepath.Join(worktree, ".ai", "spec.md"), content)
+
+	_, err := materializeInputClosure(context.Background(), InputMaterializationOptions{
+		SourceRoots:      []string{worktree},
+		Include:          []string{".ai/**"},
+		FollowReferences: false,
+		TargetRoot:       worktree, // same as source root — the self-copy scenario
+	})
+	if err != nil {
+		t.Fatalf("materializeInputClosure: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(worktree, ".ai", "spec.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Fatalf("input materialization truncated .ai/spec.md: got %d bytes, want %d", len(got), len(content))
+	}
+}
+
 func mustWriteInputFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
