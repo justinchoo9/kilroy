@@ -56,7 +56,7 @@ digraph G {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err := Run(ctx, dot, RunOptions{RepoPath: repo, RunID: "detfailcycle", LogsRoot: t.TempDir()})
+	_, err := runForTest(t, ctx, dot, RunOptions{RepoPath: repo, RunID: "detfailcycle", LogsRoot: t.TempDir()})
 	if err == nil {
 		t.Fatalf("expected run to abort with deterministic failure cycle error, but it succeeded")
 	}
@@ -101,7 +101,7 @@ digraph G {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	res, err := Run(ctx, dot, RunOptions{RepoPath: repo, RunID: "detfailrecovery", LogsRoot: t.TempDir()})
+	res, err := runForTest(t, ctx, dot, RunOptions{RepoPath: repo, RunID: "detfailrecovery", LogsRoot: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
@@ -176,7 +176,7 @@ digraph G {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err := Run(ctx, dot, RunOptions{RepoPath: repo, RunID: "impl-ok-verify-fail", LogsRoot: t.TempDir()})
+	_, err := runForTest(t, ctx, dot, RunOptions{RepoPath: repo, RunID: "impl-ok-verify-fail", LogsRoot: t.TempDir()})
 	if err == nil {
 		t.Fatalf("expected run to abort with deterministic failure cycle error, but it succeeded")
 	}
@@ -281,7 +281,7 @@ digraph G {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err := Run(ctx, dot, RunOptions{RepoPath: repo, RunID: "structural-main-loop", LogsRoot: t.TempDir()})
+	_, err := runForTest(t, ctx, dot, RunOptions{RepoPath: repo, RunID: "structural-main-loop", LogsRoot: t.TempDir()})
 	if err == nil {
 		t.Fatalf("expected run to abort with deterministic failure cycle error, but it succeeded")
 	}

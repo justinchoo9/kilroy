@@ -33,7 +33,7 @@ digraph G {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	res, err := Run(ctx, dot, RunOptions{
+	res, err := runForTest(t, ctx, dot, RunOptions{
 		RepoPath: repo,
 		RunID:    "test-failure-dossier",
 		LogsRoot: logsRoot,

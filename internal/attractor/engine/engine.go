@@ -83,6 +83,10 @@ type RunOptions struct {
 	// before the main loop starts. Allows callers to capture an engine
 	// reference for context inspection, etc.
 	OnEngineReady func(e *Engine)
+
+	// Arbitrary key/value metadata written to manifest.json under "labels".
+	// Use to fingerprint runs for later querying or pruning (e.g. source=test).
+	Labels map[string]string
 }
 
 func (o *RunOptions) applyDefaults() error {
@@ -1148,6 +1152,11 @@ func (e *Engine) executeWithRetry(ctx context.Context, node *model.Node, retries
 	stageDir := filepath.Join(e.LogsRoot, node.ID)
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		// Before running attempt N>1, archive the previous attempt's files into
+		// attempt_{N-1}/ so they survive when executeNode overwrites them.
+		if attempt > 1 {
+			archiveAttemptDir(stageDir, attempt-1)
+		}
 		e.appendProgress(map[string]any{
 			"event":   "stage_attempt_start",
 			"node_id": node.ID,
@@ -1284,6 +1293,32 @@ func (e *Engine) executeWithRetry(ctx context.Context, node *model.Node, retries
 		return fo, nil
 	}
 	return runtime.Outcome{Status: runtime.StatusFail, FailureReason: "max retries exceeded"}, nil
+}
+
+// archiveAttemptDir copies the flat files in stageDir (skipping subdirectories)
+// into stageDir/attempt_N/ so that each retry attempt's artifacts are preserved.
+// Errors are silently ignored — archiving is best-effort and must not block execution.
+func archiveAttemptDir(stageDir string, attemptNum int) {
+	destDir := filepath.Join(stageDir, fmt.Sprintf("attempt_%d", attemptNum))
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return
+	}
+	entries, err := os.ReadDir(stageDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue // skip existing attempt_N subdirectories
+		}
+		src := filepath.Join(stageDir, entry.Name())
+		dst := filepath.Join(destDir, entry.Name())
+		data, err := os.ReadFile(src)
+		if err != nil {
+			continue
+		}
+		_ = os.WriteFile(dst, data, 0o644)
+	}
 }
 
 func sleepWithContext(ctx context.Context, delay time.Duration) bool {
@@ -1441,6 +1476,9 @@ func (e *Engine) writeManifest(baseSHA string) error {
 	}
 	if len(e.Options.ForceModels) > 0 {
 		manifest["force_models"] = copyStringStringMap(e.Options.ForceModels)
+	}
+	if len(e.Options.Labels) > 0 {
+		manifest["labels"] = copyStringStringMap(e.Options.Labels)
 	}
 	return writeJSON(filepath.Join(e.LogsRoot, "manifest.json"), manifest)
 }
@@ -1694,6 +1732,13 @@ func parseInt(s string, def int) int {
 		return def
 	}
 	return n
+}
+
+// DefaultRunsBaseDir returns the parent directory that contains all run
+// subdirectories (one per run ID). This is the directory that list/prune
+// commands scan.
+func DefaultRunsBaseDir() string {
+	return filepath.Dir(defaultLogsRoot("placeholder"))
 }
 
 func defaultLogsRoot(runID string) string {
