@@ -147,4 +147,3 @@ func gitRootOrEmpty(env ExecutionEnvironment, cwd string) string {
 	}
 	return root
 }
-

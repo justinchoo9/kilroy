@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -59,6 +60,9 @@ func TestRunProviderCapabilityProbe_TimesOutAndKillsProcessGroup(t *testing.T) {
 }
 
 func TestRunProviderCapabilityProbe_RespectsParentContextCancel(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("process group signaling is unreliable on macOS")
+	}
 	parentPIDPath := filepath.Join(t.TempDir(), "parent.pid")
 	childPIDPath := filepath.Join(t.TempDir(), "child.pid")
 	cliPath := writeBlockingProbeCLI(t, "gemini", parentPIDPath, childPIDPath)
@@ -92,6 +96,9 @@ func TestRunProviderCapabilityProbe_RespectsParentContextCancel(t *testing.T) {
 func TestRunWithConfig_WarnsWhenCLIModelNotInCatalogForProvider(t *testing.T) {
 	t.Setenv("KILROY_PREFLIGHT_PROMPT_PROBES", "off")
 	t.Setenv("GEMINI_API_KEY", "k-test")
+	t.Setenv("KIMI_API_KEY", "k-test")
+	t.Setenv("ZAI_API_KEY", "k-test")
+	t.Setenv("CEREBRAS_API_KEY", "k-test")
 	repo := initTestRepo(t)
 	catalog := writeCatalogForPreflight(t, `{
   "data": [
@@ -125,6 +132,10 @@ func TestRunWithConfig_WarnsWhenCLIModelNotInCatalogForProvider(t *testing.T) {
 
 func TestRunWithConfig_WarnsWhenAPIModelNotInCatalogForProvider(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "k-test")
+	t.Setenv("GEMINI_API_KEY", "k-test")
+	t.Setenv("KIMI_API_KEY", "k-test")
+	t.Setenv("ZAI_API_KEY", "k-test")
+	t.Setenv("CEREBRAS_API_KEY", "k-test")
 	repo := initTestRepo(t)
 	catalog := writeCatalogForPreflight(t, `{
   "data": [
@@ -159,6 +170,7 @@ func TestRunWithConfig_WarnsWhenAPIModelNotInCatalogForProvider(t *testing.T) {
 func TestRunWithConfig_WarnsAndContinues_WhenProviderNotInCatalog(t *testing.T) {
 	t.Setenv("KILROY_PREFLIGHT_PROMPT_PROBES", "off")
 	t.Setenv("CEREBRAS_API_KEY", "k-cerebras")
+	t.Setenv("ZAI_API_KEY", "k-test")
 
 	repo := initTestRepo(t)
 	catalog := writeCatalogForPreflight(t, `{
@@ -308,6 +320,7 @@ func TestRunWithConfig_AllowsKimiAndZai_WhenCatalogUsesOpenRouterPrefixes(t *tes
 	t.Setenv("KILROY_PREFLIGHT_PROMPT_PROBES", "off")
 	t.Setenv("KIMI_API_KEY", "k-kimi")
 	t.Setenv("ZAI_API_KEY", "k-zai")
+	t.Setenv("CEREBRAS_API_KEY", "k-test")
 
 	repo := initTestRepo(t)
 	catalog := writeCatalogForPreflight(t, `{

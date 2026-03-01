@@ -7,10 +7,10 @@ import (
 )
 
 func TestResolveDetachedPaths_ConvertsRelativeToAbsolute(t *testing.T) {
-	tempDir := t.TempDir()
-	// Resolve symlinks so the comparison matches filepath.Abs on macOS,
-	// where t.TempDir() returns /var/... but Abs resolves /private/var/...
-	tempDir, _ = filepath.EvalSymlinks(tempDir)
+	tempDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
 	oldWD, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
